@@ -10,7 +10,10 @@
 #include <Preferences.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 
+#include "gps_clock.h"
+#include "ntp_server.h"
 #include "secrets.h"
 #include "web_page.h"
 
@@ -28,6 +31,8 @@ static const int GPS_UART1_RX = 1;
 static const int GPS_UART1_TX = 2;
 static const int GPS_UART2_RX = 1;
 static const int GPS_UART2_TX = 2;
+// Broche TIMEPULSE (PPS) du GPS pour un NTP précis à quelques µs ; -1 si non câblée
+static const int GPS_PPS_PIN = -1;
 
 // ---------- TFT ----------
 static const int TFT_CS   = 14;
@@ -97,7 +102,7 @@ Adafruit_ST7789 tft(&spiTFT, TFT_CS, TFT_DC, TFT_RST);
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 // Page 2 dessinée hors écran puis envoyée d'un bloc : pas de scintillement.
-GFXcanvas16* page2Canvas = nullptr;
+GFXcanvas16* tftCanvas = nullptr;
 
 TinyGPSPlus gps;
 TinyGPSCustom gpsQuality(gps, "GNGGA", 6);
@@ -132,7 +137,6 @@ String fixText = "NO FIX";
 uint16_t fixColor = C_RED;
 
 unsigned long lastDataRefresh = 0;
-unsigned long lastBlink = 0;
 unsigned long lastGpsActivity = 0;
 unsigned long lastOledSwitch = 0;
 unsigned long lastWifiAttempt = 0;
@@ -144,16 +148,6 @@ bool showUTC = true;
 uint8_t tftPage = 0;
 
 String oldOledText = "";
-
-String oldLat = "";
-String oldLon = "";
-String oldAlt = "";
-String oldSpd = "";
-String oldFix = "";
-String oldStatus = "";
-String oldGpsError = "";
-uint32_t oldSats = 999999;
-bool oldBlinkState = false;
 
 // ============================================================
 // OUTILS
@@ -298,6 +292,7 @@ void readGpsStream() {
     char c = gpsPort->read();
     lastGpsActivity = millis();
     gps.encode(c);
+    gpsClockOnChar(c);
     captureNmea(c);
   }
 }
@@ -346,14 +341,6 @@ void refreshGpsData() {
 }
 
 // ============================================================
-// TFT HELPERS
-// ============================================================
-
-void clearValueBox(int x, int y, int w, int h) {
-  tft.fillRect(x, y, w, h, C_PANEL);
-}
-
-// ============================================================
 // OLED
 // ============================================================
 
@@ -392,194 +379,6 @@ void updateOledTime() {
   oled.print(line2);
 
   oled.display();
-}
-
-// ============================================================
-// TFT UI
-// ============================================================
-
-void drawStaticUI() {
-  tft.fillScreen(C_BG);
-
-  for (int y = 0; y < 240; y += 20) tft.drawFastHLine(0, y, 240, C_GRID);
-  for (int x = 0; x < 240; x += 20) tft.drawFastVLine(x, 0, 240, C_GRID);
-
-  tft.fillCircle(210, 28, 26, C_PANEL);
-  tft.fillCircle(228, 12, 12, C_GRID);
-
-  tft.setTextWrap(false);
-
-  tft.setTextColor(C_ACCENT);
-  tft.setTextSize(2);
-  tft.setCursor(12, 10);
-  tft.print("-={GPS}=-");
-
-  tft.fillRoundRect(10, 44, 220, 182, 12, C_PANEL);
-  tft.drawRoundRect(10, 44, 220, 182, 12, C_GRID);
-
-  tft.drawRoundRect(132, 8, 96, 28, 8, C_GRID);
-  tft.fillRoundRect(132, 8, 96, 28, 8, C_PANEL);
-
-  tft.setTextColor(C_DIM);
-  tft.setTextSize(1);
-  tft.setCursor(22, 58);  tft.print("LAT");
-  tft.setCursor(22, 104); tft.print("LONG");
-  tft.setCursor(22, 150); tft.print("ALTITUDE");
-  tft.setCursor(22, 194); tft.print("VITESSE");
-  tft.setCursor(182, 58); tft.print("SAT");
-}
-
-void updateFix() {
-  if (fixText != oldFix || blinkState != oldBlinkState) {
-    tft.fillRoundRect(133, 9, 94, 26, 8, C_PANEL);
-
-    if (blinkState && fixText != "NO FIX") {
-      tft.fillCircle(143, 22, 4, fixColor);
-    } else {
-      tft.drawCircle(143, 22, 4, fixColor);
-    }
-
-    tft.setTextColor(fixColor);
-    tft.setTextSize(1);
-    tft.setCursor(154, 18);
-    tft.print(fixText);
-
-    oldFix = fixText;
-    oldBlinkState = blinkState;
-  }
-}
-
-void updateLat() {
-  String s = gpsError ? "error" : safeValue(locValid, fmtCoord(lat));
-  if (s != oldLat) {
-    clearValueBox(22, 74, 120, 16);
-    tft.setTextColor(gpsError ? C_RED : C_TEXT);
-    tft.setTextSize(2);
-    tft.setCursor(22, 74);
-    tft.print(s);
-    oldLat = s;
-  }
-}
-
-void updateLon() {
-  String s = gpsError ? "error" : safeValue(locValid, fmtCoord(lon));
-  if (s != oldLon) {
-    clearValueBox(22, 120, 120, 16);
-    tft.setTextColor(gpsError ? C_RED : C_TEXT);
-    tft.setTextSize(2);
-    tft.setCursor(22, 120);
-    tft.print(s);
-    oldLon = s;
-  }
-}
-
-void updateAlt() {
-  String s = gpsError ? "error" : safeValue(altValid, fmtAlt(alt), "-- m");
-  if (s != oldAlt) {
-    clearValueBox(22, 166, 120, 16);
-    tft.setTextColor(gpsError ? C_RED : C_TEXT);
-    tft.setTextSize(2);
-    tft.setCursor(22, 166);
-    tft.print(s);
-    oldAlt = s;
-  }
-}
-
-void updateSpd() {
-  String s = gpsError ? "error" : safeValue(spdValid, fmtSpeed(spd), "-- km/h");
-  if (s != oldSpd) {
-    clearValueBox(22, 210, 120, 16);
-    tft.setTextColor(gpsError ? C_RED : C_ACCENT);
-    tft.setTextSize(2);
-    tft.setCursor(22, 210);
-    tft.print(s);
-    oldSpd = s;
-  }
-}
-
-void updateSats() {
-  uint32_t displaySats = (gpsError || !satsValid) ? 999999 : sats;
-
-  if (displaySats != oldSats) {
-    clearValueBox(160, 82, 60, 28);
-
-    tft.setTextColor((!gpsError && satsValid) ? C_GREEN : C_DIM);
-    tft.setTextSize(3);
-    tft.setCursor(176, 82);
-
-    if (!gpsError && satsValid) tft.print((uint32_t)sats);
-    else tft.print("--");
-
-    tft.fillRect(148, 140, 70, 45, C_PANEL);
-
-    int bars = 0;
-    if (!gpsError && satsValid) {
-      bars = (int)(sats / 2);
-      if (bars > 5) bars = 5;
-    }
-
-    for (int i = 0; i < 5; i++) {
-      int bh = 8 + i * 6;
-      uint16_t color = (i < bars) ? C_GREEN : C_GRID;
-      tft.fillRoundRect(150 + i * 12, 180 - bh, 8, bh, 2, color);
-    }
-
-    oldSats = displaySats;
-  }
-}
-
-void updateGpsError() {
-  String s = gpsError ? "error" : "";
-  if (s != oldGpsError) {
-    clearValueBox(22, 184, 120, 10);
-
-    if (gpsError) {
-      tft.setTextColor(C_RED);
-      tft.setTextSize(1);
-      tft.setCursor(22, 184);
-      tft.print("error");
-    }
-
-    oldGpsError = s;
-  }
-}
-
-void updateFooter() {
-#if GPS_USE_UART1
-  String s = "GPS: UART1 - " + computeStatusText();
-#else
-  String s = "GPS: UART2 - " + computeStatusText();
-#endif
-
-  if (WiFi.status() == WL_CONNECTED) s += " - WIFI OK";
-  else s += " - WIFI OFF";
-
-  if (s != oldStatus) {
-    tft.fillRect(0, 228, 240, 12, C_BG);
-    tft.setTextColor(C_DIM);
-    tft.setTextSize(1);
-    tft.setCursor(4, 231);
-    tft.print(s);
-    oldStatus = s;
-  }
-}
-
-void refreshDisplay() {
-  updateFix();
-  updateLat();
-  updateLon();
-  updateAlt();
-  updateGpsError();
-  updateSpd();
-  updateSats();
-  updateFooter();
-}
-
-// Force le redessin complet de la page 1 au prochain refreshDisplay()
-void invalidatePage1() {
-  oldLat = oldLon = oldAlt = oldSpd = oldFix = oldStatus = oldGpsError = "\x01";
-  oldSats = 0xFFFFFFFE;
-  oldBlinkState = !blinkState;
 }
 
 // ============================================================
@@ -634,8 +433,8 @@ void drawSignalBars(GFXcanvas16& g, int x, int bottom, int rssi, bool connected)
 }
 
 void drawPage2() {
-  if (!page2Canvas) return;
-  GFXcanvas16& g = *page2Canvas;
+  if (!tftCanvas) return;
+  GFXcanvas16& g = *tftCanvas;
   g.setTextWrap(false);
   g.fillScreen(C2_BG);
 
@@ -706,21 +505,92 @@ void drawPage2() {
   g.print(gpsError ? "PAS DE DONNEES" : (locValid ? "FIX" : "RECHERCHE"));
 
   // Indicateur de page
-  g.fillCircle(114, 232, 3, C2_EDGE);
-  g.fillCircle(126, 232, 3, C_ACCENT);
+  g.fillCircle(114, 236, 2, C2_EDGE);
+  g.fillCircle(126, 236, 2, C_ACCENT);
 
   tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
 }
 
-void showTftPage(uint8_t page) {
-  tftPage = page;
-  if (tftPage == 0) {
-    drawStaticUI();
-    invalidatePage1();
-    refreshDisplay();
-  } else {
-    drawPage2();
+// ============================================================
+// TFT PAGE 1 : POSITION
+// ============================================================
+
+void drawTile(GFXcanvas16& g, int x, int y, int w, int h, const char* label, const String& value,
+              const char* unit, uint16_t valueColor) {
+  g.fillRoundRect(x, y, w, h, 8, C2_CARD);
+  g.drawRoundRect(x, y, w, h, 8, C2_EDGE);
+  drawLabel(g, x + 8, y + 8, label);
+  drawSmooth(g, &FreeSansBold12pt7b, x + 8, y + 22, valueColor, value);
+  if (unit) drawLabel(g, x + 8, y + h - 12, unit);
+}
+
+void drawCoordRow(GFXcanvas16& g, int top, double v, char pos, char neg) {
+  String txt = gpsError ? String("--") : (locValid ? fmtCoord(fabs(v)) : String("--.------"));
+  drawSmooth(g, &FreeSansBold18pt7b, 22, top, locValid && !gpsError ? C2_VALUE : C2_LABEL, txt);
+  if (locValid && !gpsError) {
+    drawSmooth(g, &FreeSansBold12pt7b, 206, top + 4, C_ACCENT, String(v >= 0 ? pos : neg));
   }
+}
+
+void drawPage1() {
+  if (!tftCanvas) return;
+  GFXcanvas16& g = *tftCanvas;
+  g.setTextWrap(false);
+  g.fillScreen(C2_BG);
+
+  // En-tête + pastille de fix
+  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "Position");
+  g.fillRoundRect(138, 9, 90, 24, 12, C2_CARD);
+  g.drawRoundRect(138, 9, 90, 24, 12, fixColor);
+  if (blinkState && fixText != "NO FIX") g.fillCircle(152, 21, 4, fixColor);
+  else g.drawCircle(152, 21, 4, fixColor);
+  drawSmooth(g, &FreeSansBold9pt7b, 162, 14, fixColor, fixText);
+
+  // Coordonnées en grand
+  drawCard(g, 10, 42, 220, 100, "COORDONNEES", C_ACCENT);
+  drawCoordRow(g, 66, lat, 'N', 'S');
+  drawCoordRow(g, 104, lon, 'E', 'O');
+
+  // Altitude, vitesse, satellites
+  bool ok = !gpsError;
+  String altTxt = ok && altValid ? String((long)lround(alt)) : String("--");
+  String spdTxt = ok && spdValid ? String(spd, spd < 100 ? 1 : 0) : String("--");
+  String satTxt = ok && satsValid ? String(sats) : String("--");
+  drawTile(g, 10, 150, 70, 58, "ALTITUDE", altTxt, "m", C2_VALUE);
+  drawTile(g, 85, 150, 70, 58, "VITESSE", spdTxt, "km/h", C_ACCENT);
+  drawTile(g, 160, 150, 70, 58, "SAT", satTxt, nullptr,
+           ok && satsValid && sats >= 4 ? C_GREEN : C2_VALUE);
+  int bars = ok && satsValid ? min<int>(sats / 2, 5) : 0;
+  for (int i = 0; i < 5; i++) {
+    int bh = 3 + i * 2;
+    g.fillRect(168 + i * 6, 202 - bh, 4, bh, i < bars ? C_GREEN : C2_EDGE);
+  }
+
+  // Pied : serveur NTP et réseau
+  bool synced = gpsClockSynced();
+  g.fillRoundRect(10, 214, 220, 18, 9, C2_CARD);
+  g.fillCircle(21, 223, 3, synced ? C_GREEN : C_ORANGE);
+  g.setFont(nullptr);
+  g.setTextColor(C2_VALUE);
+  g.setCursor(30, 219);
+  g.print(String("NTP ") + (synced ? (gpsClockUsesPps() ? "PPS" : "GPS") : "ATTENTE") +
+          "  " + String(ntpRequestCount()) + " req");
+  bool wifiOk = WiFi.status() == WL_CONNECTED;
+  g.setTextColor(wifiOk ? C2_LABEL : (setupApActive ? C_ORANGE : C_RED));
+  String netTxt = wifiOk ? WiFi.localIP().toString() : String(setupApActive ? "AP" : "WIFI HORS");
+  g.setCursor(222 - netTxt.length() * 6, 219);
+  g.print(netTxt);
+
+  // Indicateur de page
+  g.fillCircle(114, 236, 2, C_ACCENT);
+  g.fillCircle(126, 236, 2, C2_EDGE);
+
+  tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
+}
+
+void drawCurrentPage() {
+  if (tftPage == 0) drawPage1();
+  else drawPage2();
 }
 
 // ============================================================
@@ -762,6 +632,8 @@ void saveNetConfig() {
 }
 
 void beginStation() {
+  // Sans veille modem : sinon les réponses NTP attendent le prochain beacon (jusqu'à ~300 ms)
+  WiFi.setSleep(false);
   if (net.dhcp) {
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
   } else if (!WiFi.config(net.ip, net.gateway, net.subnet, net.dns1, net.dns2)) {
@@ -952,6 +824,14 @@ String buildJson() {
   json += "\"utc\":\"" + getUtcTimeString() + "\",";
   json += "\"france\":\"" + getFranceTimeString() + "\",";
   json += "\"charsProcessed\":" + String(gps.charsProcessed());
+  json += "},";
+
+  json += "\"ntp\":{";
+  json += "\"synced\":" + String(gpsClockSynced() ? "true" : "false") + ",";
+  json += "\"source\":\"" + String(gpsClockUsesPps() ? "PPS" : "NMEA") + "\",";
+  uint32_t syncAge = gpsClockSyncAgeMs();
+  json += "\"syncAgeMs\":" + (syncAge == UINT32_MAX ? String("null") : String(syncAge)) + ",";
+  json += "\"requests\":" + String(ntpRequestCount());
   json += "}";
 
 #if GPS_USE_UART1
@@ -1022,11 +902,11 @@ void initTft() {
   tft.setRotation(0);
   tft.setSPISpeed(40000000);
 
-  page2Canvas = new GFXcanvas16(240, 240);
-  if (!page2Canvas->getBuffer()) {
+  tftCanvas = new GFXcanvas16(240, 240);
+  if (!tftCanvas->getBuffer()) {
     Serial.println("Pas assez de RAM pour la page 2");
-    delete page2Canvas;
-    page2Canvas = nullptr;
+    delete tftCanvas;
+    tftCanvas = nullptr;
   }
 }
 
@@ -1046,40 +926,38 @@ void setup() {
   lastWifiAttempt = millis();
   lastPageSwitch = millis();
 
+  gpsClockBegin(GPS_PPS_PIN);
+
   loadNetConfig();
   connectWifi();
   initWebServer();
+  ntpServerBegin();
 
-  drawStaticUI();
   refreshGpsData();
-  refreshDisplay();
+  drawCurrentPage();
   updateOledTime();
 }
 
 void loop() {
   readGpsStream();
+  ntpServerLoop();
   server.handleClient();
+  ntpServerLoop();
   maintainWifi();
 
   if (restartAt && (long)(millis() - restartAt) >= 0) ESP.restart();
 
-  if (millis() - lastBlink >= BLINK_INTERVAL_MS) {
-    lastBlink = millis();
-    blinkState = !blinkState;
-    if (tftPage == 0) updateFix();
-  }
-
   if (millis() - lastPageSwitch >= TFT_PAGE_MS) {
     lastPageSwitch = millis();
-    refreshGpsData();
-    showTftPage(page2Canvas ? 1 - tftPage : 0);
+    tftPage = 1 - tftPage;
+    lastDataRefresh = 0;
   }
 
   if (millis() - lastDataRefresh >= REFRESH_INTERVAL_MS) {
     lastDataRefresh = millis();
+    blinkState = !blinkState;
     refreshGpsData();
-    if (tftPage == 0) refreshDisplay();
-    else drawPage2();
+    drawCurrentPage();
   }
 
   updateOledTime();

@@ -6,7 +6,24 @@ Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
 - **OLED SSD1306 128×32** : heure UTC et heure de France en alternance (toutes les 5 s)
 - **Serveur web** : page dashboard sur `/`, données brutes sur `/json`, configuration réseau sur `/config`
 
-Le TFT alterne toutes les 10 s entre la page GPS et une page « Réseau & GPS » (SSID, IP, passerelle, signal, dernières trames RMC/GGA, qualité du fix, HDOP, âge de la position).
+Le TFT alterne toutes les 10 s entre la page Position (coordonnées en grand, altitude, vitesse, satellites, état NTP) et une page « Réseau & GPS » (SSID, IP, passerelle, signal, dernières trames RMC/GGA, qualité du fix, HDOP, âge de la position).
+
+## Serveur NTP
+
+L'ESP32 répond aux requêtes NTP (UDP/123) avec l'heure GPS, en stratum 1.
+
+- **Sans fix :** il répond « non synchronisé » (LI = 3, stratum 16), donc les clients ignorent son heure.
+- **Sans PPS (par défaut) :** le début de chaque seconde est estimé à l'arrivée de la trame RMC, moins une latence fixe (`NMEA_LATENCY_US` dans `src/gps_clock.cpp`, 60 ms). La précision est de l'ordre de ±50 ms. On peut ajuster cette latence en comparant avec un serveur NTP de référence.
+- **Avec PPS :** relier la broche TIMEPULSE du GPS à une GPIO libre et renseigner `GPS_PPS_PIN` dans `src/main.cpp`. Le front montant donne alors le début exact de la seconde (refid `PPS`).
+- **Hors synchro :** si plus aucune trame RMC valide n'arrive pendant 30 s, le serveur repasse en « non synchronisé ».
+
+Test depuis Windows :
+
+```powershell
+w32tm /stripchart /computer:192.168.0.32 /samples:5 /dataonly
+```
+
+L'état NTP (synchro, source, nombre de requêtes) figure dans `/json` et en bas de la page 1 du TFT.
 
 ## Configuration réseau
 
