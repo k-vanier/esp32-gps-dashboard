@@ -4,7 +4,15 @@ Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
 
 - **TFT ST7789 240×240** : latitude, longitude, altitude, vitesse, satellites, état du fix
 - **OLED SSD1306 128×32** : heure UTC et heure de France en alternance (toutes les 5 s)
-- **Serveur web** : page dashboard sur `/` et données brutes sur `/json`
+- **Serveur web** : page dashboard sur `/`, données brutes sur `/json`, configuration réseau sur `/config`
+
+Le TFT alterne toutes les 10 s entre la page GPS et une page « Réseau & GPS » (SSID, IP, passerelle, signal, dernières trames RMC/GGA, qualité du fix, HDOP, âge de la position).
+
+## Configuration réseau
+
+La page `/config` permet de changer le SSID, le mot de passe, le DHCP ou l'IP fixe, le masque, la passerelle et les DNS. Les réglages sont enregistrés en NVS et l'ESP32 redémarre. `include/secrets.h` ne fournit que les valeurs par défaut.
+
+Si le WiFi est injoignable au démarrage, l'ESP32 ouvre le point d'accès **ESP32-GPS-Setup** (mot de passe `gpsconfig`). La config est alors sur http://192.168.4.1/config. Le point d'accès se ferme dès que le WiFi revient.
 
 ## Matériel et câblage
 

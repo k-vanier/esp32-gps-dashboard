@@ -322,7 +322,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     </section>
 
     <div class="footer">
-      Données JSON disponibles sur <a href="/json">/json</a>
+      <a href="/config">Configuration réseau</a> · Données JSON sur <a href="/json">/json</a>
     </div>
   </div>
 
@@ -396,6 +396,90 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     refreshData();
     setInterval(refreshData, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// Page de configuration réseau, servie sur "/config".
+// Les marqueurs %NOM% sont remplacés côté firmware.
+static const char CONFIG_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Configuration réseau</title>
+  <style>
+    :root{--bg:#0b1020;--line:rgba(255,255,255,.08);--text:#edf3ff;--muted:#9eb0d1;--accent:#66e3ff;--bad:#ff6b81;--good:#59f2a5}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;color:var(--text);min-height:100vh;
+      background:radial-gradient(circle at top right,rgba(102,227,255,.12),transparent 30%),linear-gradient(180deg,#0b1020,#0d1424)}
+    .wrap{max-width:560px;margin:0 auto;padding:20px}
+    h1{margin:0 0 4px;font-size:24px}
+    .sub{margin:0 0 18px;color:var(--muted);font-size:14px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.02));border:1px solid var(--line);
+      border-radius:18px;padding:18px;margin-bottom:16px}
+    h2{margin:0 0 12px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+    label{display:block;font-size:13px;color:var(--muted);margin:12px 0 6px}
+    input[type=text],input[type=password]{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+      background:rgba(0,0,0,.25);color:var(--text);font-size:15px}
+    input:focus{outline:2px solid var(--accent);outline-offset:1px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+    .check{display:flex;align-items:center;gap:10px;margin-top:4px;color:var(--text);font-size:15px}
+    .check input{width:18px;height:18px}
+    .hint{font-size:12px;color:var(--muted);margin-top:6px}
+    .static.off{opacity:.4;pointer-events:none}
+    .msg{padding:12px 14px;border-radius:12px;margin-bottom:16px;font-size:14px}
+    .msg.err{background:rgba(255,107,129,.12);border:1px solid rgba(255,107,129,.4);color:var(--bad)}
+    .msg.ok{background:rgba(89,242,165,.1);border:1px solid rgba(89,242,165,.4);color:var(--good)}
+    .actions{display:flex;gap:10px;align-items:center;justify-content:space-between}
+    button{padding:12px 18px;border:0;border-radius:12px;background:var(--accent);color:#06202a;font-weight:700;font-size:15px;cursor:pointer}
+    a{color:var(--accent);text-decoration:none}
+    @media (max-width:480px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Configuration réseau</h1>
+    <p class="sub">Enregistrée dans l'ESP32. L'appareil redémarre après l'enregistrement.</p>
+    %MESSAGE%
+    <form method="post" action="/config">
+      <section class="card">
+        <h2>WiFi</h2>
+        <label for="ssid">Nom du réseau (SSID)</label>
+        <input type="text" id="ssid" name="ssid" value="%SSID%" maxlength="32" required>
+        <label for="pass">Mot de passe</label>
+        <input type="password" id="pass" name="pass" maxlength="63" placeholder="Laisser vide pour garder l'actuel" autocomplete="new-password">
+      </section>
+
+      <section class="card">
+        <h2>Adresse IP</h2>
+        <label class="check"><input type="checkbox" id="dhcp" name="dhcp" %DHCP%> Obtenir l'adresse automatiquement (DHCP)</label>
+        <div id="static" class="static">
+          <div class="grid">
+            <div><label for="ip">Adresse IP</label><input type="text" id="ip" name="ip" value="%IP%" inputmode="decimal"></div>
+            <div><label for="mask">Masque</label><input type="text" id="mask" name="mask" value="%MASK%" inputmode="decimal"></div>
+            <div><label for="gw">Passerelle</label><input type="text" id="gw" name="gw" value="%GW%" inputmode="decimal"></div>
+            <div></div>
+            <div><label for="dns1">DNS principal</label><input type="text" id="dns1" name="dns1" value="%DNS1%" inputmode="decimal"></div>
+            <div><label for="dns2">DNS secondaire</label><input type="text" id="dns2" name="dns2" value="%DNS2%" inputmode="decimal"></div>
+          </div>
+        </div>
+        <p class="hint">Si le WiFi est injoignable, l'ESP32 ouvre le point d'accès <b>ESP32-GPS-Setup</b> (mot de passe <b>gpsconfig</b>), accessible sur http://192.168.4.1/config.</p>
+      </section>
+
+      <div class="actions">
+        <a href="/">← Dashboard</a>
+        <button type="submit">Enregistrer et redémarrer</button>
+      </div>
+    </form>
+  </div>
+  <script>
+    const dhcp = document.getElementById('dhcp');
+    const box = document.getElementById('static');
+    function sync(){ box.classList.toggle('off', dhcp.checked); }
+    dhcp.addEventListener('change', sync); sync();
   </script>
 </body>
 </html>

@@ -7,6 +7,7 @@
 #include <Adafruit_ST7789.h>
 #include <Adafruit_SSD1306.h>
 #include <TinyGPSPlus.h>
+#include <Preferences.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 
@@ -44,14 +45,25 @@ static const int TFT_BL   = 22;
 #define OLED_HEIGHT 32
 
 // ---------- WiFi ----------
-const char* WIFI_SSID = WIFI_SSID_VALUE;
-const char* WIFI_PASS = WIFI_PASS_VALUE;
+// Valeurs par défaut, remplacées par celles enregistrées en NVS depuis /config.
+struct NetConfig {
+  String ssid = WIFI_SSID_VALUE;
+  String pass = WIFI_PASS_VALUE;
+  bool dhcp = false;
+  IPAddress ip      {192, 168, 0, 32};
+  IPAddress gateway {192, 168, 0, 1};
+  IPAddress subnet  {255, 255, 255, 0};
+  IPAddress dns1    {8, 8, 8, 8};
+  IPAddress dns2    {8, 8, 4, 4};
+};
 
-IPAddress LOCAL_IP(192, 168, 0, 32);
-IPAddress GATEWAY(192, 168, 0, 1);
-IPAddress SUBNET(255, 255, 255, 0);
-IPAddress PRIMARY_DNS(8, 8, 8, 8);
-IPAddress SECONDARY_DNS(8, 8, 4, 4);
+NetConfig net;
+Preferences prefs;
+
+// Point d'accès de secours si le WiFi configuré est injoignable
+const char* SETUP_AP_SSID = "ESP32-GPS-Setup";
+const char* SETUP_AP_PASS = "gpsconfig";
+bool setupApActive = false;
 
 // ---------- Timing ----------
 const unsigned long GPS_TIMEOUT_MS      = 3000;
@@ -631,23 +643,26 @@ void drawPage2() {
 
   // En-tête
   drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "Reseau & GPS");
-  g.fillRoundRect(186, 12, 42, 18, 9, wifiOk ? C_GREEN : C_RED);
+  g.fillRoundRect(186, 12, 42, 18, 9, wifiOk ? C_GREEN : (setupApActive ? C_ORANGE : C_RED));
   g.setFont(nullptr);
   g.setTextColor(C2_BG);
-  g.setCursor(wifiOk ? 196 : 193, 17);
-  g.print(wifiOk ? "WIFI" : "HORS");
+  g.setCursor(wifiOk ? 196 : (setupApActive ? 201 : 196), 17);
+  g.print(wifiOk ? "WIFI" : (setupApActive ? "AP" : "HORS"));
 
   // Carte WiFi
   drawCard(g, 10, 42, 220, 84, "WIFI", C_ACCENT);
   drawSignalBars(g, 194, 60, WiFi.RSSI(), wifiOk);
-  drawSmooth(g, &FreeSansBold9pt7b, 22, 28 + 42 - 4, C2_VALUE, String(WIFI_SSID));
+  drawSmooth(g, &FreeSansBold9pt7b, 22, 28 + 42 - 4, C2_VALUE,
+             setupApActive && !wifiOk ? String(SETUP_AP_SSID) : net.ssid);
   drawLabel(g, 22, 90, "IP");
-  drawSmooth(g, &FreeSansBold12pt7b, 40, 84, C_ACCENT,
-             wifiOk ? WiFi.localIP().toString() : String("--"));
-  drawLabel(g, 22, 112, "GW");
+  String ipTxt = wifiOk ? WiFi.localIP().toString()
+                        : (setupApActive ? WiFi.softAPIP().toString() : String("--"));
+  drawSmooth(g, &FreeSansBold12pt7b, 40, 84, C_ACCENT, ipTxt);
+  drawLabel(g, 22, 112, setupApActive && !wifiOk ? "AP" : "GW");
   g.setTextColor(C2_VALUE);
   g.setCursor(40, 112);
-  g.print(GATEWAY.toString());
+  g.print(setupApActive && !wifiOk ? String("mdp ") + SETUP_AP_PASS
+                                   : (wifiOk ? WiFi.gatewayIP() : net.gateway).toString());
   if (wifiOk) {
     g.setCursor(150, 112);
     g.print(String(WiFi.RSSI()) + " dBm");
@@ -664,16 +679,23 @@ void drawPage2() {
   g.setCursor(22, 161);
   g.print(String(lastGga[0] ? lastGga : "$--GGA (rien)").substring(0, 33));
 
-  String utc = getUtcTimeString();
-  String satsTxt = (!gpsError && satsValid) ? String(sats) : String("--");
+  // Qualité GGA : 0 aucun fix, 1 GPS, 2 différentiel (EGNOS)
+  String qualTxt = "--";
+  if (!gpsError && gpsQuality.isValid()) {
+    int q = atoi(gpsQuality.value());
+    qualTxt = q == 0 ? "AUCUN" : (q == 2 ? "DGPS" : (q == 1 ? "GPS" : String(q)));
+  }
   String hdopTxt = (!gpsError && gps.hdop.isValid() && locValid) ? String(gps.hdop.hdop(), 1) : String("--");
+  String ageTxt = (!gpsError && gps.location.isValid())
+                      ? String(gps.location.age() / 1000.0, 1) + "s"
+                      : String("--");
 
-  drawLabel(g, 22, 176, "UTC");
-  drawLabel(g, 112, 176, "SAT");
-  drawLabel(g, 160, 176, "HDOP");
-  drawSmooth(g, &FreeSansBold9pt7b, 22, 187, C2_VALUE, utc);
-  drawSmooth(g, &FreeSansBold9pt7b, 112, 187, C2_VALUE, satsTxt);
-  drawSmooth(g, &FreeSansBold9pt7b, 160, 187, C2_VALUE, hdopTxt);
+  drawLabel(g, 22, 176, "QUALITE");
+  drawLabel(g, 104, 176, "HDOP");
+  drawLabel(g, 166, 176, "AGE");
+  drawSmooth(g, &FreeSansBold9pt7b, 22, 187, C2_VALUE, qualTxt);
+  drawSmooth(g, &FreeSansBold9pt7b, 104, 187, C2_VALUE, hdopTxt);
+  drawSmooth(g, &FreeSansBold9pt7b, 166, 187, C2_VALUE, ageTxt);
 
   g.setFont(nullptr);
   g.setTextColor(C2_LABEL);
@@ -705,20 +727,77 @@ void showTftPage(uint8_t page) {
 // WIFI
 // ============================================================
 
+IPAddress readIp(const char* key, const IPAddress& fallback) {
+  IPAddress ip;
+  return ip.fromString(prefs.getString(key, "")) ? ip : fallback;
+}
+
+void loadNetConfig() {
+  prefs.begin("net", true);
+  if (prefs.isKey("ssid")) {
+    net.ssid    = prefs.getString("ssid", net.ssid);
+    net.pass    = prefs.getString("pass", net.pass);
+    net.dhcp    = prefs.getBool("dhcp", net.dhcp);
+    net.ip      = readIp("ip", net.ip);
+    net.gateway = readIp("gw", net.gateway);
+    net.subnet  = readIp("mask", net.subnet);
+    net.dns1    = readIp("dns1", net.dns1);
+    net.dns2    = readIp("dns2", net.dns2);
+    Serial.println("Config reseau chargee depuis la NVS");
+  }
+  prefs.end();
+}
+
+void saveNetConfig() {
+  prefs.begin("net", false);
+  prefs.putString("ssid", net.ssid);
+  prefs.putString("pass", net.pass);
+  prefs.putBool("dhcp", net.dhcp);
+  prefs.putString("ip", net.ip.toString());
+  prefs.putString("gw", net.gateway.toString());
+  prefs.putString("mask", net.subnet.toString());
+  prefs.putString("dns1", net.dns1.toString());
+  prefs.putString("dns2", net.dns2.toString());
+  prefs.end();
+}
+
+void beginStation() {
+  if (net.dhcp) {
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  } else if (!WiFi.config(net.ip, net.gateway, net.subnet, net.dns1, net.dns2)) {
+    Serial.println("Echec WiFi.config()");
+  }
+  WiFi.begin(net.ssid.c_str(), net.pass.c_str());
+}
+
+void startSetupAp() {
+  if (setupApActive) return;
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(SETUP_AP_SSID, SETUP_AP_PASS);
+  setupApActive = true;
+  Serial.print("Point d'acces de secours ");
+  Serial.print(SETUP_AP_SSID);
+  Serial.print(" : http://");
+  Serial.println(WiFi.softAPIP());
+}
+
+void stopSetupAp() {
+  if (!setupApActive) return;
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  setupApActive = false;
+  Serial.println("Point d'acces de secours arrete");
+}
+
 void connectWifi() {
   Serial.println();
   Serial.println("Configuration WiFi...");
 
   WiFi.mode(WIFI_STA);
-
-  if (!WiFi.config(LOCAL_IP, GATEWAY, SUBNET, PRIMARY_DNS, SECONDARY_DNS)) {
-    Serial.println("Echec WiFi.config()");
-  }
-
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  beginStation();
 
   Serial.print("Connexion a ");
-  Serial.println(WIFI_SSID);
+  Serial.println(net.ssid);
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_RETRY_MS) {
@@ -733,23 +812,118 @@ void connectWifi() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("WiFi non connecte");
+    startSetupAp();
   }
 }
 
 void maintainWifi() {
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    stopSetupAp();
+    return;
+  }
 
   if (millis() - lastWifiAttempt >= WIFI_RETRY_MS) {
     lastWifiAttempt = millis();
     Serial.println("Reconnexion WiFi...");
+    startSetupAp();
+    // Un client connecté à l'AP : on évite le balayage de canaux qui le décrocherait
+    if (WiFi.softAPgetStationNum() > 0) return;
     WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    beginStation();
   }
 }
 
 // ============================================================
 // WEB / JSON
 // ============================================================
+
+unsigned long restartAt = 0;
+
+String jsonEscape(const String& s) {
+  String out;
+  for (char c : s) {
+    if (c == '"' || c == '\\') { out += '\\'; out += c; }
+    else if ((uint8_t)c >= 0x20) out += c;
+  }
+  return out;
+}
+
+String htmlEscape(const String& s) {
+  String out;
+  for (char c : s) {
+    switch (c) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&#39;"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+String buildConfigPage(const String& message) {
+  String html = FPSTR(CONFIG_HTML);
+  html.replace("%MESSAGE%", message);
+  html.replace("%SSID%", htmlEscape(net.ssid));
+  html.replace("%DHCP%", net.dhcp ? "checked" : "");
+  html.replace("%IP%", net.ip.toString());
+  html.replace("%MASK%", net.subnet.toString());
+  html.replace("%GW%", net.gateway.toString());
+  html.replace("%DNS1%", net.dns1.toString());
+  html.replace("%DNS2%", net.dns2.toString());
+  return html;
+}
+
+void handleConfigGet() {
+  server.send(200, "text/html; charset=utf-8", buildConfigPage(""));
+}
+
+void handleConfigPost() {
+  NetConfig next = net;
+  String err;
+
+  next.ssid = server.arg("ssid");
+  next.ssid.trim();
+  if (server.arg("pass").length()) next.pass = server.arg("pass");
+  next.dhcp = server.hasArg("dhcp");
+
+  if (next.ssid.isEmpty() || next.ssid.length() > 32) err = "SSID vide ou trop long.";
+  else if (next.pass.length() && (next.pass.length() < 8 || next.pass.length() > 63))
+    err = "Le mot de passe WPA doit faire 8 à 63 caractères.";
+
+  if (err.isEmpty() && !next.dhcp) {
+    struct { const char* field; const char* name; IPAddress* dst; } fields[] = {
+      {"ip", "Adresse IP", &next.ip},     {"mask", "Masque", &next.subnet},
+      {"gw", "Passerelle", &next.gateway}, {"dns1", "DNS principal", &next.dns1},
+      {"dns2", "DNS secondaire", &next.dns2},
+    };
+    for (auto& f : fields) {
+      if (!f.dst->fromString(server.arg(f.field))) {
+        err = String(f.name) + " invalide.";
+        break;
+      }
+    }
+  }
+
+  if (err.length()) {
+    server.send(400, "text/html; charset=utf-8",
+                buildConfigPage("<div class=\"msg err\">" + htmlEscape(err) + "</div>"));
+    return;
+  }
+
+  net = next;
+  saveNetConfig();
+
+  String where = net.dhcp ? String("l'adresse attribuée par la box (affichée sur l'écran, page 2)")
+                          : "<a href=\"http://" + net.ip.toString() + "/\">http://" + net.ip.toString() + "/</a>";
+  server.send(200, "text/html; charset=utf-8",
+              buildConfigPage("<div class=\"msg ok\">Enregistré. Redémarrage en cours, le dashboard sera sur " +
+                              where + ".</div>"));
+  Serial.println("Config reseau enregistree, redemarrage");
+  restartAt = millis() + 1500;
+}
 
 String buildJson() {
   String json;
@@ -758,7 +932,7 @@ String buildJson() {
   json += "{";
   json += "\"wifi\":{";
   json += "\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") + ",";
-  json += "\"ssid\":\"" + String(WIFI_SSID) + "\",";
+  json += "\"ssid\":\"" + jsonEscape(net.ssid) + "\",";
   json += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
   json += "},";
 
@@ -806,16 +980,19 @@ void handleNotFound() {
 void initWebServer() {
   server.on("/", handleRoot);
   server.on("/json", handleJson);
+  server.on("/config", HTTP_GET, handleConfigGet);
+  server.on("/config", HTTP_POST, handleConfigPost);
   server.onNotFound(handleNotFound);
   server.begin();
 
+  IPAddress ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP();
   Serial.println("Serveur web demarre");
   Serial.print("HTML : http://");
-  Serial.print(LOCAL_IP);
+  Serial.print(ip);
   Serial.println("/");
-  Serial.print("JSON : http://");
-  Serial.print(LOCAL_IP);
-  Serial.println("/json");
+  Serial.print("Config : http://");
+  Serial.print(ip);
+  Serial.println("/config");
 }
 
 // ============================================================
@@ -869,6 +1046,7 @@ void setup() {
   lastWifiAttempt = millis();
   lastPageSwitch = millis();
 
+  loadNetConfig();
   connectWifi();
   initWebServer();
 
@@ -882,6 +1060,8 @@ void loop() {
   readGpsStream();
   server.handleClient();
   maintainWifi();
+
+  if (restartAt && (long)(millis() - restartAt) >= 0) ESP.restart();
 
   if (millis() - lastBlink >= BLINK_INTERVAL_MS) {
     lastBlink = millis();
