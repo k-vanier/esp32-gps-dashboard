@@ -16,6 +16,7 @@ a{color:var(--accent);text-decoration:none}
 .wrap{max-width:1100px;margin:0 auto;padding:20px}
 nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
 nav a{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--muted);font-size:13px}
+nav a:hover{color:#fff;border-color:rgba(102,227,255,.5)}
 nav a.on{color:#06202a;background:var(--accent);border-color:var(--accent);font-weight:700}
 .hero{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;padding:20px;margin-bottom:16px;
   border:1px solid var(--line);border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));box-shadow:var(--shadow)}
@@ -394,7 +395,29 @@ function render(d){
     : '<tr><td colspan="3" class="muted">Aucun client pour l\'instant</td></tr>';
 }
 
-$('copy').onclick = () => navigator.clipboard && navigator.clipboard.writeText($('cmd').textContent);
+// navigator.clipboard n'existe qu'en HTTPS ou sur localhost : repli sur execCommand pour l'ESP32 en HTTP
+function copyText(text){
+  if(navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  return new Promise((ok, ko) => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy') ? ok() : ko(); } catch(e){ ko(e); }
+    document.body.removeChild(ta);
+  });
+}
+$('copy').onclick = () => {
+  const b = $('copy');
+  copyText($('cmd').textContent)
+    .then(() => { b.textContent = 'Copié !'; })
+    .catch(() => {  // dernier recours : sélectionner le texte pour Ctrl+C
+      const r = document.createRange(); r.selectNodeContents($('cmd'));
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      b.textContent = 'Ctrl+C';
+    })
+    .finally(() => setTimeout(() => { b.textContent = 'Copier'; }, 1500));
+};
 
 async function refresh(){
   try{ render(await (await fetch('/sats.json',{cache:'no-store'})).json()); }

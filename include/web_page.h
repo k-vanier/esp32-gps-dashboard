@@ -202,6 +202,12 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       word-break:break-all;
     }
 
+    nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+    nav a{padding:8px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.03);
+      color:var(--muted);font-size:13px;text-decoration:none}
+    nav a:hover{color:#fff;border-color:rgba(102,227,255,.5)}
+    nav a.on{color:#06202a;background:var(--accent);border-color:var(--accent);font-weight:700}
+
     .footer{
       margin-top:16px;
       text-align:center;
@@ -235,6 +241,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
   <div class="wrap">
+    <nav><a class="on" href="/">Dashboard</a><a href="/metar">Météo</a><a href="/sats">Satellites &amp; NTP</a><a href="/config">Configuration</a></nav>
     <section class="hero">
       <div>
         <h1 class="title">ESP32 GPS Dashboard</h1>
@@ -322,8 +329,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     </section>
 
     <div class="footer">
-      <a href="/metar">Météo METAR</a> · <a href="/sats">Satellites &amp; NTP</a> ·
-      <a href="/config">Configuration</a> · <a href="/json">JSON</a>
+      Données brutes : <a href="/json">/json</a>
     </div>
   </div>
 
@@ -437,11 +443,16 @@ static const char CONFIG_HTML[] PROGMEM = R"rawliteral(
     .actions{display:flex;gap:10px;align-items:center;justify-content:space-between}
     button{padding:12px 18px;border:0;border-radius:12px;background:var(--accent);color:#06202a;font-weight:700;font-size:15px;cursor:pointer}
     a{color:var(--accent);text-decoration:none}
+    nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+    nav a{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--muted);font-size:13px}
+    nav a:hover{color:#fff;border-color:rgba(102,227,255,.5)}
+    nav a.on{color:#06202a;background:var(--accent);border-color:var(--accent);font-weight:700}
     @media (max-width:480px){.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
   <div class="wrap">
+    <nav><a href="/">Dashboard</a><a href="/metar">Météo</a><a href="/sats">Satellites &amp; NTP</a><a class="on" href="/config">Configuration</a></nav>
     <h1>Configuration</h1>
     <p class="sub">Réseau et météo, enregistrés dans l'ESP32. L'appareil redémarre après l'enregistrement.</p>
     %MESSAGE%
