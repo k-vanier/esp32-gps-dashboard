@@ -13,7 +13,14 @@ Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
 
 Le détail des satellites vient des trames GSV et GSA. L'ESP32 les active au démarrage, par son TX (GPIO2) relié au RX du GPS. `tools/gps_config.ps1` les active aussi de façon permanente.
 
-Le TFT alterne toutes les 10 s entre la page Position (coordonnées en grand, altitude, vitesse, satellites, état NTP) et une page « Réseau & GPS » (SSID, IP, passerelle, signal, dernières trames RMC/GGA, qualité du fix, HDOP, âge de la position).
+Le TFT (style clair, fond blanc) fait défiler 4 pages toutes les 10 s, avec une transition glissée :
+
+1. **Position** : coordonnées en grand, altitude, vitesse, satellites, état NTP
+2. **Réseau** : IP, SSID, passerelle, signal, MAC (ou infos du point d'accès de secours)
+3. **Paquet GPS** : dernières trames RMC/GGA, qualité du fix, HDOP, âge, compteurs de trames
+4. **METAR** : vent avec rose, température, humidité, QNH, ciel, tendance
+
+Animations : barre de progression jusqu'à la page suivante, pastille de fix qui pulse, vitesse et altitude qui défilent vers la nouvelle valeur, barres WiFi qui se remplissent, flèche du vent qui tourne. Hors animation, seules la pastille et la barre de progression sont renvoyées à l'écran, pour ne pas bloquer le serveur NTP.
 
 ## METAR (page 3)
 

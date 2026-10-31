@@ -17,6 +17,7 @@
 #include "metar.h"
 #include "ntp_server.h"
 #include "secrets.h"
+#include "shift_canvas.h"
 #include "web_page.h"
 #include "web_pages_extra.h"
 
@@ -78,12 +79,11 @@ bool setupApActive = false;
 // ---------- Timing ----------
 const unsigned long GPS_TIMEOUT_MS      = 3000;
 const unsigned long GPS_TIME_MAX_AGE_MS = 2000;
-const unsigned long BLINK_INTERVAL_MS   = 500;
 const unsigned long REFRESH_INTERVAL_MS = 500;
 const unsigned long OLED_SWITCH_MS      = 5000;
 const unsigned long WIFI_RETRY_MS       = 10000;
 const unsigned long TFT_PAGE_MS         = 10000;
-const int TFT_PAGE_COUNT                = 3;
+const int TFT_PAGE_COUNT                = 4;
 
 // ============================================================
 // COULEURS TFT
@@ -107,8 +107,8 @@ SPIClass spiTFT(FSPI);
 Adafruit_ST7789 tft(&spiTFT, TFT_CS, TFT_DC, TFT_RST);
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
-// Page 2 dessinée hors écran puis envoyée d'un bloc : pas de scintillement.
-GFXcanvas16* tftCanvas = nullptr;
+// Pages dessinées hors écran puis envoyées d'un bloc : pas de scintillement.
+ShiftCanvas* tftCanvas = nullptr;
 
 TinyGPSPlus gps;
 TinyGPSCustom gpsQuality(gps, "GNGGA", 6);
@@ -149,7 +149,6 @@ unsigned long lastWifiAttempt = 0;
 
 unsigned long lastPageSwitch = 0;
 
-bool blinkState = false;
 bool showUTC = true;
 uint8_t tftPage = 0;
 
@@ -396,18 +395,58 @@ void updateOledTime() {
 }
 
 // ============================================================
-// TFT PAGE 2 : RESEAU + PAQUET GPS
+// TFT : STYLE CLAIR + ANIMATIONS
 // ============================================================
+// Chaque page est dessinée dans tftCanvas avec un décalage x (ShiftCanvas),
+// ce qui permet la transition glissée. Hors animation, seules la pastille
+// et la barre de progression sont renvoyées à l'écran (zones partielles).
 
-#define C2_BG      0x0862
-#define C2_CARD    0x18E5
-#define C2_EDGE    0x2967
-#define C2_LABEL   0x8C51
-#define C2_VALUE   0xF7BE
-#define C2_RAW     0x6E7F
+#define D_BG     0xFFDF   // #f8fafc
+#define D_HEAD   0x08A5   // #0f172a
+#define D_TEXT   0x08A5
+#define D_LABEL  0x63B1   // #64748b
+#define D_DIV    0xE75E   // #e2e8f0
+#define D_GREEN  0x1509   // #16a34a
+#define D_GREEN2 0x8775   // #86efac
+#define D_BLUE   0x231D   // #2563eb
+#define D_RED    0xD924   // #dc2626
+#define D_AMBER  0xDBA0   // #d97706
+#define D_VIOLET 0xC13A   // #c026d3
+#define D_WHITE  0xFFFF
 
-// Texte en police lissée, positionné par le haut (les FreeFonts partent de la ligne de base)
-void drawSmooth(GFXcanvas16& g, const GFXfont* font, int x, int top, uint16_t color, const String& s) {
+const uint32_t TRANSITION_MS   = 350;
+const uint32_t ENTER_ANIM_MS   = 1000;  // barres WiFi, flèche du vent
+const uint32_t FRAME_FAST_MS   = 33;    // pendant une animation
+const uint32_t FRAME_IDLE_MS   = 66;    // pulsation + barre de progression
+const uint32_t FULL_PUSH_MS    = 500;   // rafraîchissement complet des données
+
+struct {
+  bool active = false;
+  uint8_t from = 0, to = 0;
+  uint32_t startMs = 0;
+} transition;
+
+uint32_t pageEnterMs = 0;
+uint32_t lastFrameMs = 0;
+uint32_t lastFullPushMs = 0;
+
+// Valeurs affichées qui glissent vers la valeur réelle
+float spdShown = NAN, altShown = NAN;
+
+float easeOut(float t) {
+  if (t >= 1) return 1;
+  if (t <= 0) return 0;
+  float u = 1 - t;
+  return 1 - u * u * u;
+}
+
+uint16_t blend565(uint16_t a, uint16_t b, float t) {
+  int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31;
+  int br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
+  return ((int)(ar + (br - ar) * t) << 11) | ((int)(ag + (bg - ag) * t) << 5) | (int)(ab + (bb - ab) * t);
+}
+
+void drawSmooth(ShiftCanvas& g, const GFXfont* font, int x, int top, uint16_t color, const String& s) {
   g.setFont(font);
   g.setTextColor(color);
   int16_t bx, by;
@@ -417,232 +456,38 @@ void drawSmooth(GFXcanvas16& g, const GFXfont* font, int x, int top, uint16_t co
   g.print(s);
 }
 
-void drawLabel(GFXcanvas16& g, int x, int y, const char* s) {
+int textWidth(ShiftCanvas& g, const GFXfont* font, const String& s) {
+  g.setFont(font);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  g.getTextBounds(s, 0, 0, &bx, &by, &bw, &bh);
+  return bw + bx;
+}
+
+void drawLabel(ShiftCanvas& g, int x, int y, const String& s, uint16_t color = D_LABEL) {
   g.setFont(nullptr);
   g.setTextSize(1);
-  g.setTextColor(C2_LABEL);
+  g.setTextColor(color);
   g.setCursor(x, y);
   g.print(s);
 }
 
-void drawCard(GFXcanvas16& g, int x, int y, int w, int h, const char* title, uint16_t accent) {
-  g.fillRoundRect(x, y, w, h, 10, C2_CARD);
-  g.drawRoundRect(x, y, w, h, 10, C2_EDGE);
-  g.fillRoundRect(x + 12, y + 9, 3, 9, 1, accent);
-  drawLabel(g, x + 20, y + 10, title);
+void drawDivider(ShiftCanvas& g, int y) {
+  g.fillRect(12, y, 216, 2, D_DIV);
 }
 
-void drawPageDots(GFXcanvas16& g) {
-  for (int i = 0; i < TFT_PAGE_COUNT; i++) {
-    g.fillCircle(120 + (i * 2 - (TFT_PAGE_COUNT - 1)) * 6, 236, 2, i == tftPage ? C_ACCENT : C2_EDGE);
+void drawHeader(ShiftCanvas& g, const String& title, const String& pill, uint16_t pillColor) {
+  g.fillRect(0, 0, 240, 32, D_HEAD);
+  drawSmooth(g, &FreeSansBold9pt7b, 12, 10, D_WHITE, title);
+  if (pill.length()) {
+    int w = textWidth(g, &FreeSansBold9pt7b, pill) + 18;
+    g.fillRoundRect(230 - w, 6, w, 21, 10, pillColor);
+    drawSmooth(g, &FreeSansBold9pt7b, 239 - w, 10, D_WHITE, pill);
   }
-}
-
-void drawSignalBars(GFXcanvas16& g, int x, int bottom, int rssi, bool connected) {
-  int bars = 0;
-  if (connected) {
-    if (rssi > -55) bars = 4;
-    else if (rssi > -65) bars = 3;
-    else if (rssi > -75) bars = 2;
-    else bars = 1;
-  }
-  for (int i = 0; i < 4; i++) {
-    int h = 5 + i * 4;
-    g.fillRoundRect(x + i * 7, bottom - h, 5, h, 1, i < bars ? C_GREEN : C2_EDGE);
-  }
-}
-
-void drawPage2() {
-  if (!tftCanvas) return;
-  GFXcanvas16& g = *tftCanvas;
-  g.setTextWrap(false);
-  g.fillScreen(C2_BG);
-
-  bool wifiOk = WiFi.status() == WL_CONNECTED;
-
-  // En-tête
-  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "Reseau & GPS");
-  g.fillRoundRect(186, 12, 42, 18, 9, wifiOk ? C_GREEN : (setupApActive ? C_ORANGE : C_RED));
-  g.setFont(nullptr);
-  g.setTextColor(C2_BG);
-  g.setCursor(wifiOk ? 196 : (setupApActive ? 201 : 196), 17);
-  g.print(wifiOk ? "WIFI" : (setupApActive ? "AP" : "HORS"));
-
-  // Carte WiFi
-  drawCard(g, 10, 42, 220, 84, "WIFI", C_ACCENT);
-  drawSignalBars(g, 194, 60, WiFi.RSSI(), wifiOk);
-  drawSmooth(g, &FreeSansBold9pt7b, 22, 28 + 42 - 4, C2_VALUE,
-             setupApActive && !wifiOk ? String(SETUP_AP_SSID) : net.ssid);
-  drawLabel(g, 22, 90, "IP");
-  String ipTxt = wifiOk ? WiFi.localIP().toString()
-                        : (setupApActive ? WiFi.softAPIP().toString() : String("--"));
-  drawSmooth(g, &FreeSansBold12pt7b, 40, 84, C_ACCENT, ipTxt);
-  drawLabel(g, 22, 112, setupApActive && !wifiOk ? "AP" : "GW");
-  g.setTextColor(C2_VALUE);
-  g.setCursor(40, 112);
-  g.print(setupApActive && !wifiOk ? String("mdp ") + SETUP_AP_PASS
-                                   : (wifiOk ? WiFi.gatewayIP() : net.gateway).toString());
-  if (wifiOk) {
-    g.setCursor(150, 112);
-    g.print(String(WiFi.RSSI()) + " dBm");
-  }
-
-  // Carte paquet GPS
-  uint16_t gpsAccent = gpsError ? C_RED : (locValid ? C_GREEN : C_ORANGE);
-  drawCard(g, 10, 134, 220, 90, "PAQUET GPS", gpsAccent);
-
-  g.setFont(nullptr);
-  g.setTextColor(C2_RAW);
-  g.setCursor(22, 150);
-  g.print(String(lastRmc[0] ? lastRmc : "$--RMC (rien)").substring(0, 33));
-  g.setCursor(22, 161);
-  g.print(String(lastGga[0] ? lastGga : "$--GGA (rien)").substring(0, 33));
-
-  // Qualité GGA : 0 aucun fix, 1 GPS, 2 différentiel (EGNOS)
-  String qualTxt = "--";
-  if (!gpsError && gpsQuality.isValid()) {
-    int q = atoi(gpsQuality.value());
-    qualTxt = q == 0 ? "AUCUN" : (q == 2 ? "DGPS" : (q == 1 ? "GPS" : String(q)));
-  }
-  String hdopTxt = (!gpsError && gps.hdop.isValid() && locValid) ? String(gps.hdop.hdop(), 1) : String("--");
-  String ageTxt = (!gpsError && gps.location.isValid())
-                      ? String(gps.location.age() / 1000.0, 1) + "s"
-                      : String("--");
-
-  drawLabel(g, 22, 176, "QUALITE");
-  drawLabel(g, 104, 176, "HDOP");
-  drawLabel(g, 166, 176, "AGE");
-  drawSmooth(g, &FreeSansBold9pt7b, 22, 187, C2_VALUE, qualTxt);
-  drawSmooth(g, &FreeSansBold9pt7b, 104, 187, C2_VALUE, hdopTxt);
-  drawSmooth(g, &FreeSansBold9pt7b, 166, 187, C2_VALUE, ageTxt);
-
-  g.setFont(nullptr);
-  g.setTextColor(C2_LABEL);
-  g.setCursor(22, 210);
-  g.print("OK " + String(gps.passedChecksum()) + "  ERR " + String(gps.failedChecksum()));
-  g.setTextColor(gpsAccent);
-  g.setCursor(148, 210);
-  g.print(gpsError ? "PAS DE DONNEES" : (locValid ? "FIX" : "RECHERCHE"));
-
-  drawPageDots(g);
-
-  tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
-}
-
-// ============================================================
-// TFT PAGE 1 : POSITION
-// ============================================================
-
-void drawTile(GFXcanvas16& g, int x, int y, int w, int h, const char* label, const String& value,
-              const char* unit, uint16_t valueColor) {
-  g.fillRoundRect(x, y, w, h, 8, C2_CARD);
-  g.drawRoundRect(x, y, w, h, 8, C2_EDGE);
-  drawLabel(g, x + 8, y + 8, label);
-  drawSmooth(g, &FreeSansBold12pt7b, x + 8, y + 22, valueColor, value);
-  if (unit) drawLabel(g, x + 8, y + h - 12, unit);
-}
-
-void drawCoordRow(GFXcanvas16& g, int top, double v, char pos, char neg) {
-  String txt = gpsError ? String("--") : (locValid ? fmtCoord(fabs(v)) : String("--.------"));
-  drawSmooth(g, &FreeSansBold18pt7b, 22, top, locValid && !gpsError ? C2_VALUE : C2_LABEL, txt);
-  if (locValid && !gpsError) {
-    drawSmooth(g, &FreeSansBold12pt7b, 206, top + 4, C_ACCENT, String(v >= 0 ? pos : neg));
-  }
-}
-
-void drawPage1() {
-  if (!tftCanvas) return;
-  GFXcanvas16& g = *tftCanvas;
-  g.setTextWrap(false);
-  g.fillScreen(C2_BG);
-
-  // En-tête + pastille de fix
-  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "Position");
-  g.fillRoundRect(138, 9, 90, 24, 12, C2_CARD);
-  g.drawRoundRect(138, 9, 90, 24, 12, fixColor);
-  if (blinkState && fixText != "NO FIX") g.fillCircle(152, 21, 4, fixColor);
-  else g.drawCircle(152, 21, 4, fixColor);
-  drawSmooth(g, &FreeSansBold9pt7b, 162, 14, fixColor, fixText);
-
-  // Coordonnées en grand
-  drawCard(g, 10, 42, 220, 100, "COORDONNEES", C_ACCENT);
-  drawCoordRow(g, 66, lat, 'N', 'S');
-  drawCoordRow(g, 104, lon, 'E', 'O');
-
-  // Altitude, vitesse, satellites
-  bool ok = !gpsError;
-  String altTxt = ok && altValid ? String((long)lround(alt)) : String("--");
-  String spdTxt = ok && spdValid ? String(spd, spd < 100 ? 1 : 0) : String("--");
-  String satTxt = ok && satsValid ? String(sats) : String("--");
-  drawTile(g, 10, 150, 70, 58, "ALTITUDE", altTxt, "m", C2_VALUE);
-  drawTile(g, 85, 150, 70, 58, "VITESSE", spdTxt, "km/h", C_ACCENT);
-  drawTile(g, 160, 150, 70, 58, "SAT", satTxt, nullptr,
-           ok && satsValid && sats >= 4 ? C_GREEN : C2_VALUE);
-  int bars = ok && satsValid ? min<int>(sats / 2, 5) : 0;
-  for (int i = 0; i < 5; i++) {
-    int bh = 3 + i * 2;
-    g.fillRect(168 + i * 6, 202 - bh, 4, bh, i < bars ? C_GREEN : C2_EDGE);
-  }
-
-  // Pied : serveur NTP et réseau
-  bool synced = gpsClockSynced();
-  g.fillRoundRect(10, 214, 220, 18, 9, C2_CARD);
-  g.fillCircle(21, 223, 3, synced ? C_GREEN : C_ORANGE);
-  g.setFont(nullptr);
-  g.setTextColor(C2_VALUE);
-  g.setCursor(30, 219);
-  g.print(String("NTP ") + (synced ? (gpsClockUsesPps() ? "PPS" : "GPS") : "ATTENTE") +
-          "  " + String(ntpRequestCount()) + " req");
-  bool wifiOk = WiFi.status() == WL_CONNECTED;
-  g.setTextColor(wifiOk ? C2_LABEL : (setupApActive ? C_ORANGE : C_RED));
-  String netTxt = wifiOk ? WiFi.localIP().toString() : String(setupApActive ? "AP" : "WIFI HORS");
-  g.setCursor(222 - netTxt.length() * 6, 219);
-  g.print(netTxt);
-
-  drawPageDots(g);
-  tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
-}
-
-// ============================================================
-// TFT PAGE 3 : METAR
-// ============================================================
-
-uint16_t flightRulesColor(const String& r) {
-  if (r == "VFR") return C_GREEN;
-  if (r == "MVFR") return 0x5D9F;   // bleu
-  if (r == "IFR") return C_RED;
-  if (r == "LIFR") return 0xF81F;   // magenta
-  return C2_LABEL;
-}
-
-// Rose : la flèche indique où va le vent (il vient de la direction opposée)
-void drawWindRose(GFXcanvas16& g, int cx, int cy, int r, int dirDeg) {
-  g.drawCircle(cx, cy, r, C2_EDGE);
-  for (int i = 0; i < 4; i++) {
-    float a = i * HALF_PI;
-    g.drawLine(cx + (r - 4) * sin(a), cy - (r - 4) * cos(a), cx + r * sin(a), cy - r * cos(a), C2_LABEL);
-  }
-  g.setFont(nullptr);
-  g.setTextColor(C2_LABEL);
-  g.setCursor(cx - 2, cy - r - 9);
-  g.print("N");
-  if (dirDeg < 0) {
-    g.fillCircle(cx, cy, 3, C_ACCENT);
-    return;
-  }
-  float a = radians(dirDeg + 180);
-  int tx = cx + (r - 3) * sin(a), ty = cy - (r - 3) * cos(a);       // pointe
-  int bx = cx - (r - 6) * sin(a), by = cy + (r - 6) * cos(a);       // queue
-  float pa = a + PI;
-  int lx = tx + 8 * sin(pa - 0.45), ly = ty - 8 * cos(pa - 0.45);
-  int rx = tx + 8 * sin(pa + 0.45), ry = ty - 8 * cos(pa + 0.45);
-  g.drawLine(bx, by, tx, ty, C_ACCENT);
-  g.drawLine(bx + 1, by, tx + 1, ty, C_ACCENT);
-  g.fillTriangle(tx, ty, lx, ly, rx, ry, C_ACCENT);
 }
 
 // Texte 6x8 sur plusieurs lignes, coupé aux espaces
-int drawWrapped(GFXcanvas16& g, int x, int y, int maxChars, int maxLines, uint16_t color, const String& s) {
+int drawWrapped(ShiftCanvas& g, int x, int y, int maxChars, int maxLines, uint16_t color, const String& s) {
   g.setFont(nullptr);
   g.setTextColor(color);
   int line = 0;
@@ -662,99 +507,306 @@ int drawWrapped(GFXcanvas16& g, int x, int y, int maxChars, int maxLines, uint16
   return line;
 }
 
-void drawDegrees(GFXcanvas16& g, const GFXfont* font, int x, int top, uint16_t color, const String& value) {
-  drawSmooth(g, font, x, top, color, value);
-  int16_t bx, by;
-  uint16_t bw, bh;
-  g.getTextBounds(value, 0, 0, &bx, &by, &bw, &bh);
-  g.drawCircle(x + bw + 5, top + 3, 2, color);
+// ---------- Page 1 : position ----------
+
+uint16_t fixPillColor(uint32_t now) {
+  if (fixText == "NO FIX") return gpsError ? D_RED : D_AMBER;
+  // Pulsation douce de la pastille quand le fix est là
+  float t = (sinf(now * 2 * PI / 1600.0f) + 1) * 0.5f * 0.55f;
+  return blend565(fixText == "FIX 3D" ? D_GREEN : D_AMBER, D_GREEN2, t);
 }
 
-void drawPage3() {
-  if (!tftCanvas) return;
-  GFXcanvas16& g = *tftCanvas;
-  g.setTextWrap(false);
-  g.fillScreen(C2_BG);
-
-  Metar m = metarSnapshot();
-
-  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "METAR " + (m.station.length() ? m.station : net.metarStation));
-  if (m.valid && m.flightRules.length()) {
-    uint16_t c = flightRulesColor(m.flightRules);
-    g.fillRoundRect(178, 10, 50, 22, 11, c);
-    drawSmooth(g, &FreeSansBold9pt7b, 203 - m.flightRules.length() * 5, 14, C2_BG, m.flightRules);
+void drawCoord(ShiftCanvas& g, int labelY, const char* label, double v, char pos, char neg) {
+  drawLabel(g, 12, labelY, label);
+  bool ok = !gpsError && locValid;
+  String txt = ok ? fmtCoord(fabs(v), 5) : String("--.-----");
+  drawSmooth(g, &FreeSansBold18pt7b, 12, labelY + 13, ok ? D_TEXT : D_DIV, txt);
+  if (ok) {
+    int x = 12 + textWidth(g, &FreeSansBold18pt7b, txt) + 8;
+    drawSmooth(g, &FreeSansBold12pt7b, x, labelY + 18, D_RED, String(v >= 0 ? pos : neg));
   }
+}
+
+void drawPagePosition(ShiftCanvas& g, uint32_t now) {
+  g.fillRect(0, 0, 240, 240, D_BG);
+  drawHeader(g, "Position", fixText == "NO FIX" ? (gpsError ? "ERREUR" : "RECHERCHE") : fixText, fixPillColor(now));
+
+  drawCoord(g, 42, "LATITUDE", lat, 'N', 'S');
+  drawCoord(g, 92, "LONGITUDE", lon, 'E', 'O');
+  drawDivider(g, 146);
+
+  bool ok = !gpsError;
+  drawLabel(g, 12, 156, "ALT (m)");
+  drawLabel(g, 96, 156, "VITESSE km/h");
+  drawLabel(g, 196, 156, "SAT");
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 170, D_TEXT,
+             ok && altValid && !isnan(altShown) ? String((long)lround(altShown)) : String("--"));
+  drawSmooth(g, &FreeSansBold12pt7b, 96, 170, D_BLUE,
+             ok && spdValid && !isnan(spdShown) ? String(spdShown, spdShown < 100 ? 1 : 0) : String("--"));
+  drawSmooth(g, &FreeSansBold12pt7b, 196, 170, ok && satsValid && sats >= 4 ? D_GREEN : D_TEXT,
+             ok && satsValid ? String(sats) : String("--"));
+
+  bool synced = gpsClockSynced();
+  drawLabel(g, 12, 216, synced ? String("NTP synchro (") + (gpsClockUsesPps() ? "PPS" : "GPS") + ")" : String("NTP en attente du GPS"),
+            synced ? D_GREEN : D_AMBER);
+  drawLabel(g, 228 - 6 * String(ntpRequestCount()).length() - 24, 216, String(ntpRequestCount()) + " req");
+}
+
+// ---------- Page 2 : réseau ----------
+
+int wifiBars(int rssi) {
+  if (rssi > -55) return 4;
+  if (rssi > -65) return 3;
+  if (rssi > -75) return 2;
+  return 1;
+}
+
+void drawPageNetwork(ShiftCanvas& g, uint32_t now) {
+  g.fillRect(0, 0, 240, 240, D_BG);
+  bool wifiOk = WiFi.status() == WL_CONNECTED;
+  bool ap = setupApActive && !wifiOk;
+  drawHeader(g, "Reseau", wifiOk ? "WiFi OK" : (ap ? "MODE AP" : "HORS LIGNE"),
+             wifiOk ? D_BLUE : (ap ? D_AMBER : D_RED));
+
+  drawLabel(g, 12, 42, ap ? "ADRESSE DU POINT D'ACCES" : "ADRESSE IP");
+  String ip = wifiOk ? WiFi.localIP().toString() : (ap ? WiFi.softAPIP().toString() : String("--"));
+  drawSmooth(g, &FreeSansBold18pt7b, 12, 56, D_BLUE, ip);
+  drawDivider(g, 96);
+
+  drawLabel(g, 12, 106, ap ? "RESEAU A REJOINDRE" : "SSID");
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 120, D_TEXT, ap ? String(SETUP_AP_SSID) : net.ssid);
+
+  drawLabel(g, 12, 152, ap ? "MOT DE PASSE" : (net.dhcp ? "PASSERELLE (DHCP)" : "PASSERELLE"));
+  drawSmooth(g, &FreeSansBold9pt7b, 12, 166, D_TEXT,
+             ap ? String(SETUP_AP_PASS) : (wifiOk ? WiFi.gatewayIP() : net.gateway).toString());
+
+  drawLabel(g, 140, 152, "SIGNAL");
+  // Barres qui se remplissent une à une à l'arrivée sur la page
+  int bars = wifiOk ? wifiBars(WiFi.RSSI()) : 0;
+  uint32_t since = now - pageEnterMs;
+  for (int k = 0; k < 4; k++) {
+    int h = 6 + k * 5;
+    bool lit = k < bars && since > 200 + k * 120;
+    g.fillRect(140 + k * 8, 184 - h, 6, h, lit ? D_GREEN : D_DIV);
+  }
+  if (wifiOk) drawSmooth(g, &FreeSansBold9pt7b, 178, 168, D_TEXT, String(WiFi.RSSI()) + "dB");
+
+  drawLabel(g, 12, 216, "MAC " + WiFi.macAddress());
+}
+
+// ---------- Page 3 : paquet GPS ----------
+
+void drawPageGpsPacket(ShiftCanvas& g, uint32_t now) {
+  g.fillRect(0, 0, 240, 240, D_BG);
+  uint16_t c = gpsError ? D_RED : (locValid ? D_GREEN : D_AMBER);
+  drawHeader(g, "Paquet GPS", gpsError ? "AUCUNE DONNEE" : (locValid ? "FIX" : "RECHERCHE"), c);
+
+  g.fillRoundRect(8, 40, 224, 40, 6, D_DIV);
+  g.setFont(nullptr);
+  g.setTextColor(D_TEXT);
+  g.setCursor(14, 48);
+  g.print(String(lastRmc[0] ? lastRmc : "$--RMC (rien)").substring(0, 35));
+  g.setCursor(14, 63);
+  g.print(String(lastGga[0] ? lastGga : "$--GGA (rien)").substring(0, 35));
+
+  String qual = "--";
+  if (!gpsError && gpsQuality.isValid()) {
+    int q = atoi(gpsQuality.value());
+    qual = q == 0 ? "AUCUN" : (q == 2 ? "DGPS" : (q == 1 ? "GPS" : String(q)));
+  }
+  String hdop = !gpsError && gps.hdop.isValid() && locValid ? String(gps.hdop.hdop(), 1) : String("--");
+  String age = !gpsError && gps.location.isValid() ? String(gps.location.age() / 1000.0, 1) + "s" : String("--");
+  drawLabel(g, 12, 92, "QUALITE");
+  drawLabel(g, 100, 92, "HDOP");
+  drawLabel(g, 168, 92, "AGE");
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 106, D_TEXT, qual);
+  drawSmooth(g, &FreeSansBold12pt7b, 100, 106, D_TEXT, hdop);
+  drawSmooth(g, &FreeSansBold12pt7b, 168, 106, D_TEXT, age);
+  drawDivider(g, 136);
+
+  drawLabel(g, 12, 146, "TRAMES OK");
+  drawLabel(g, 100, 146, "ERREURS");
+  drawLabel(g, 168, 146, "OCTETS");
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 160, D_GREEN, String(gps.passedChecksum()));
+  drawSmooth(g, &FreeSansBold12pt7b, 100, 160, gps.failedChecksum() ? D_RED : D_TEXT, String(gps.failedChecksum()));
+  uint32_t chars = gps.charsProcessed();
+  drawSmooth(g, &FreeSansBold12pt7b, 168, 160, D_TEXT,
+             chars >= 1000000 ? String(chars / 1000000.0, 1) + "M" : (chars >= 1000 ? String(chars / 1000) + "k" : String(chars)));
+
+  drawLabel(g, 12, 216, String(GPS_USE_UART1 ? "UART1" : "UART2") + "  " + String(GPS_BAUD) + " bauds");
+}
+
+// ---------- Page 4 : METAR ----------
+
+uint16_t flightRulesColor(const String& r) {
+  if (r == "VFR") return D_GREEN;
+  if (r == "MVFR") return D_BLUE;
+  if (r == "IFR") return D_RED;
+  if (r == "LIFR") return D_VIOLET;
+  return D_LABEL;
+}
+
+// La flèche indique où va le vent ; elle tourne jusqu'à sa direction à l'arrivée sur la page
+void drawWindRose(ShiftCanvas& g, int cx, int cy, int r, float arrowDeg, bool showArrow) {
+  g.drawCircle(cx, cy, r, D_DIV);
+  g.drawCircle(cx, cy, r - 1, D_DIV);
+  for (int i = 0; i < 4; i++) {
+    float a = i * HALF_PI;
+    g.drawLine(cx + (r - 5) * sinf(a), cy - (r - 5) * cosf(a), cx + r * sinf(a), cy - r * cosf(a), D_LABEL);
+  }
+  drawLabel(g, cx - 2, cy - r - 10, "N");
+  if (!showArrow) {
+    g.fillCircle(cx, cy, 3, D_BLUE);
+    return;
+  }
+  float a = radians(arrowDeg);
+  int tx = cx + (r - 3) * sinf(a), ty = cy - (r - 3) * cosf(a);
+  int bx = cx - (r - 7) * sinf(a), by = cy + (r - 7) * cosf(a);
+  float pa = a + PI;
+  int lx = tx + 9 * sinf(pa - 0.45f), ly = ty - 9 * cosf(pa - 0.45f);
+  int rx = tx + 9 * sinf(pa + 0.45f), ry = ty - 9 * cosf(pa + 0.45f);
+  for (int d = -1; d <= 1; d++) g.drawLine(bx + d, by, tx + d, ty, D_BLUE);
+  g.fillTriangle(tx, ty, lx, ly, rx, ry, D_BLUE);
+}
+
+void drawPageMetar(ShiftCanvas& g, uint32_t now) {
+  g.fillRect(0, 0, 240, 240, D_BG);
+  Metar m = metarSnapshot();
+  drawHeader(g, "METAR " + (m.valid ? m.station : net.metarStation), m.valid ? m.flightRules : String(""),
+             flightRulesColor(m.flightRules));
 
   if (!m.valid) {
-    drawCard(g, 10, 52, 220, 80, "METEO", C_ORANGE);
-    drawSmooth(g, &FreeSansBold9pt7b, 22, 74, C2_VALUE,
-               WiFi.status() == WL_CONNECTED ? "Chargement..." : "Pas de WiFi");
-    if (m.error.length()) drawWrapped(g, 22, 100, 33, 2, C_RED, m.error);
-    drawPageDots(g);
-    tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
+    drawSmooth(g, &FreeSansBold12pt7b, 12, 60, D_TEXT, WiFi.status() == WL_CONNECTED ? "Chargement..." : "Pas de WiFi");
+    if (m.error.length()) drawWrapped(g, 12, 100, 35, 3, D_RED, m.error);
     return;
   }
 
-  // Heure d'observation
-  String obs = m.timeRepr.length() >= 6
-                   ? "Observe le " + m.timeRepr.substring(0, 2) + " a " + m.timeRepr.substring(2, 4) + "h" +
-                         m.timeRepr.substring(4, 6) + " UTC"
-                   : String("");
-  uint32_t ageMin = (millis() - m.fetchedMs) / 60000;
-  drawLabel(g, 14, 38, (obs + "  (maj " + String(ageMin) + " min)").c_str());
+  String obs = m.timeRepr.length() >= 6 ? "Obs. le " + m.timeRepr.substring(0, 2) + " a " + m.timeRepr.substring(2, 4) +
+                                              "h" + m.timeRepr.substring(4, 6) + "Z"
+                                        : String("");
+  drawLabel(g, 12, 40, obs + "  maj " + String((millis() - m.fetchedMs) / 60000) + " min");
 
-  // Vent
-  drawCard(g, 10, 50, 220, 62, "VENT", C_ACCENT);
-  drawWindRose(g, 196, 84, 18, m.windDir);
-  String wind;
-  if (m.windSpeed == 0) wind = "Calme";
-  else wind = windDirText(m.windDir) + "  " + String(m.windSpeed) + " " + m.windUnit;
-  drawSmooth(g, &FreeSansBold12pt7b, 22, 68, C2_VALUE, wind);
-  String windSub = m.windDir >= 0 ? String("du ") + metarCompass(m.windDir) : String("direction variable");
-  if (m.windGust > 0) windSub += ", rafales " + String(m.windGust) + " " + m.windUnit;
-  if (m.windVarFrom >= 0) windSub += ", var " + String(m.windVarFrom) + "-" + String(m.windVarTo);
-  drawWrapped(g, 22, 96, 26, 1, C2_LABEL, windSub);
+  drawLabel(g, 12, 56, "VENT");
+  String wind = m.windSpeed == 0 ? String("Calme") : windDirText(m.windDir) + " " + String(m.windSpeed) + m.windUnit;
+  drawSmooth(g, &FreeSansBold18pt7b, 12, 68, D_TEXT, wind);
+  String sub = m.windDir >= 0 ? String("du ") + metarCompass(m.windDir) : String("variable");
+  if (m.windGust > 0) sub += ", raf " + String(m.windGust) + m.windUnit;
+  if (m.windVarFrom >= 0) sub += ", " + String(m.windVarFrom) + "-" + String(m.windVarTo);
+  drawWrapped(g, 12, 100, 24, 1, D_LABEL, sub);
+  float k = easeOut((now - pageEnterMs) / 700.0f);
+  drawWindRose(g, 200, 84, 26, (m.windDir + 180) * k, m.windDir >= 0 && m.windSpeed > 0);
+  drawDivider(g, 114);
 
-  // Température, humidité, pression
-  bool hasT = m.temperature != INT16_MIN;
-  g.fillRoundRect(10, 118, 70, 46, 8, C2_CARD);
-  g.drawRoundRect(10, 118, 70, 46, 8, C2_EDGE);
-  drawLabel(g, 18, 125, "TEMP");
-  if (hasT) drawDegrees(g, &FreeSansBold12pt7b, 18, 137, C2_VALUE, String(m.temperature));
-  else drawSmooth(g, &FreeSansBold12pt7b, 18, 137, C2_VALUE, "--");
-  if (m.dewpoint != INT16_MIN) drawLabel(g, 50, 125, ("r" + String(m.dewpoint)).c_str());
+  drawLabel(g, 12, 122, "TEMP");
+  drawLabel(g, 92, 122, "HUMIDITE");
+  drawLabel(g, 170, 122, "QNH");
+  if (m.temperature != INT16_MIN) {
+    String t = String(m.temperature);
+    drawSmooth(g, &FreeSansBold12pt7b, 12, 136, D_TEXT, t);
+    int w = textWidth(g, &FreeSansBold12pt7b, t);
+    g.drawCircle(12 + w + 5, 139, 2, D_TEXT);
+    g.drawCircle(12 + w + 5, 139, 3, D_TEXT);
+  } else {
+    drawSmooth(g, &FreeSansBold12pt7b, 12, 136, D_TEXT, "--");
+  }
+  if (m.dewpoint != INT16_MIN) drawLabel(g, 12, 160, "rosee " + String(m.dewpoint));
+  drawSmooth(g, &FreeSansBold12pt7b, 92, 136, D_BLUE, m.humidity >= 0 ? String(m.humidity) + "%" : String("--"));
+  drawSmooth(g, &FreeSansBold12pt7b, 170, 136, D_TEXT, m.altimeter >= 0 ? String(m.altimeter) : String("--"));
+  drawDivider(g, 172);
 
-  drawTile(g, 85, 118, 70, 46, "HUMIDITE", m.humidity >= 0 ? String(m.humidity) + "%" : String("--"),
-           nullptr, C_ACCENT);
-  drawTile(g, 160, 118, 70, 46, "QNH", m.altimeter >= 0 ? String(m.altimeter) : String("--"),
-           nullptr, C2_VALUE);
-
-  // Ciel, visibilité, phénomènes, tendance
-  drawCard(g, 10, 170, 220, 62, "CIEL", flightRulesColor(m.flightRules));
   String sky;
   if (m.visibilityRepr == "CAVOK") sky = "CAVOK";
   else if (m.visibility >= 9999) sky = "Visi 10 km+";
-  else if (m.visibility >= 0) sky = "Visi " + (m.visibility >= 5000 ? String(m.visibility / 1000) + " km"
-                                                                 : String(m.visibility) + " m");
-  drawSmooth(g, &FreeSansBold9pt7b, 64, 177, C2_VALUE, sky);
-
+  else if (m.visibility >= 0) sky = "Visi " + (m.visibility >= 5000 ? String(m.visibility / 1000) + " km" : String(m.visibility) + " m");
   String detail;
   for (int i = 0; i < m.cloudCount; i++) detail += (detail.length() ? ", " : "") + metarCloudText(m.clouds[i]);
   if (m.weather.length()) detail += (detail.length() ? ", " : "") + m.weather;
-  if (detail.isEmpty() && m.visibilityRepr != "CAVOK") detail = "pas de nuages significatifs";
-
-  int y = 196;
-  if (detail.length()) y += 10 * drawWrapped(g, 22, y, 33, 1, C2_VALUE, detail);
-  if (m.trend.length()) drawWrapped(g, 22, y, 33, (226 - y) / 10, C_ORANGE, m.trend);
-
-  drawPageDots(g);
-  tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
+  drawSmooth(g, &FreeSansBold9pt7b, 12, 180, D_TEXT, sky);
+  int y = 200;
+  if (detail.length()) y += 10 * drawWrapped(g, 12, y, 36, 1, D_TEXT, detail);
+  if (m.trend.length()) drawWrapped(g, 12, y, 36, (232 - y) / 10, D_AMBER, m.trend);
 }
 
-void drawCurrentPage() {
-  if (tftPage == 0) drawPage1();
-  else if (tftPage == 1) drawPage2();
-  else drawPage3();
+// ---------- Moteur ----------
+
+void drawPage(uint8_t page, int16_t ox, uint32_t now) {
+  ShiftCanvas& g = *tftCanvas;
+  g.setTextWrap(false);
+  g.setOffset(ox);
+  switch (page) {
+    case 0: drawPagePosition(g, now); break;
+    case 1: drawPageNetwork(g, now); break;
+    case 2: drawPageGpsPacket(g, now); break;
+    default: drawPageMetar(g, now); break;
+  }
+  g.setOffset(0);
+}
+
+void pushRegion(int x, int y, int w, int h) {
+  uint16_t* buf = tftCanvas->getBuffer();
+  tft.startWrite();
+  tft.setAddrWindow(x, y, w, h);
+  for (int r = 0; r < h; r++) tft.writePixels(buf + (y + r) * 240 + x, w);
+  tft.endWrite();
+}
+
+void startPageTransition() {
+  transition.active = true;
+  transition.from = tftPage;
+  transition.to = (tftPage + 1) % TFT_PAGE_COUNT;
+  transition.startMs = millis();
+  pageEnterMs = transition.startMs;
+}
+
+// Fait glisser les valeurs affichées vers les valeurs réelles. Retourne vrai si ça bouge encore.
+bool stepRollingValues() {
+  bool moving = false;
+  auto step = [&](float& shown, bool valid, float target, float eps) {
+    if (!valid || isnan(shown)) { shown = valid ? target : NAN; return; }
+    float d = target - shown;
+    if (fabsf(d) < eps) shown = target;
+    else { shown += d * 0.3f; moving = true; }
+  };
+  step(spdShown, !gpsError && spdValid, spd, 0.05f);
+  step(altShown, !gpsError && altValid, alt, 0.5f);
+  return moving;
+}
+
+void tftFrame() {
+  if (!tftCanvas) return;
+  uint32_t now = millis();
+
+  bool rolling = stepRollingValues();
+  bool entering = now - pageEnterMs < ENTER_ANIM_MS;
+  bool heavy = transition.active || entering || rolling;
+  if (now - lastFrameMs < (heavy ? FRAME_FAST_MS : FRAME_IDLE_MS)) return;
+  lastFrameMs = now;
+
+  if (transition.active) {
+    float e = easeOut((now - transition.startMs) / (float)TRANSITION_MS);
+    int16_t shift = (int16_t)lroundf(240 * e);
+    drawPage(transition.from, -shift, now);
+    drawPage(transition.to, 240 - shift, now);
+    if (e >= 1) {
+      transition.active = false;
+      tftPage = transition.to;
+    }
+  } else {
+    drawPage(tftPage, 0, now);
+  }
+
+  // Barre de progression jusqu'à la page suivante
+  float p = transition.active ? 0 : min(1.0f, (now - lastPageSwitch) / (float)TFT_PAGE_MS);
+  tftCanvas->fillRect(0, 237, 240, 3, D_DIV);
+  tftCanvas->fillRect(0, 237, (int)(240 * p), 3, D_BLUE);
+
+  if (heavy || now - lastFullPushMs >= FULL_PUSH_MS) {
+    tft.drawRGBBitmap(0, 0, tftCanvas->getBuffer(), 240, 240);
+    lastFullPushMs = now;
+  } else {
+    pushRegion(120, 4, 120, 26);  // pastille (pulsation)
+    pushRegion(0, 237, 240, 3);   // barre de progression
+  }
 }
 
 // ============================================================
@@ -1154,9 +1206,9 @@ void initTft() {
   tft.setRotation(0);
   tft.setSPISpeed(40000000);
 
-  tftCanvas = new GFXcanvas16(240, 240);
+  tftCanvas = new ShiftCanvas(240, 240);
   if (!tftCanvas->getBuffer()) {
-    Serial.println("Pas assez de RAM pour la page 2");
+    Serial.println("Pas assez de RAM pour le canvas TFT");
     delete tftCanvas;
     tftCanvas = nullptr;
   }
@@ -1188,7 +1240,8 @@ void setup() {
   metarBegin(net.metarStation.c_str(), net.avwxToken.c_str());
 
   refreshGpsData();
-  drawCurrentPage();
+  pageEnterMs = millis();
+  tftFrame();
   updateOledTime();
 }
 
@@ -1203,16 +1256,15 @@ void loop() {
 
   if (millis() - lastPageSwitch >= TFT_PAGE_MS) {
     lastPageSwitch = millis();
-    tftPage = (tftPage + 1) % TFT_PAGE_COUNT;
-    lastDataRefresh = 0;
+    startPageTransition();
   }
 
   if (millis() - lastDataRefresh >= REFRESH_INTERVAL_MS) {
     lastDataRefresh = millis();
-    blinkState = !blinkState;
     refreshGpsData();
-    drawCurrentPage();
   }
+
+  tftFrame();
 
   updateOledTime();
 }
