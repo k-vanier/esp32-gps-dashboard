@@ -74,6 +74,21 @@ If the WiFi can't be reached at boot, the ESP32 opens the **ESP32-GPS-Setup** ac
 
 ## Hardware and wiring
 
+The board is a **[Waveshare ESP32-C6-LCD-1.3](https://www.waveshare.com/esp32-c6-lcd-1.3.htm)**: ESP32-C6 (RISC-V, Wi-Fi 6, Bluetooth 5), 4 MB flash, 1.3" 240×240 IPS screen with an ST7789V2 controller, USB-C, microSD slot and RGB LED. The TFT pins below are the ones wired on the board.
+
+<p align="center">
+  <img src="https://docs.waveshare.com/assets/images/product_photo-1ee6e8a278cd22cff21dc6d0c776b22f.webp" alt="Waveshare ESP32-C6-LCD-1.3" width="45%">
+  <img src="https://docs.waveshare.com/assets/images/Interface_Definition-2fbed47abb4f7471f62bdd9d9257e681.webp" alt="ESP32-C6-LCD-1.3 pinout" width="45%">
+</p>
+<p align="center"><sub>Photos © Waveshare, from the <a href="https://docs.waveshare.com/ESP32-C6-LCD-1.3">product documentation</a>.</sub></p>
+
+- [Product documentation](https://docs.waveshare.com/ESP32-C6-LCD-1.3)
+- [Schematic, datasheets and examples](https://docs.waveshare.com/ESP32-C6-LCD-1.3/Resources-And-Documents)
+- GPS: [u-blox NEO-M8N](https://www.u-blox.com/en/product/neo-m8-series) module
+- Clock screen: SSD1306 128×32 I²C OLED
+
+To force download mode (if the board doesn't restart after flashing), hold **BOOT** while plugging in USB, or press **RESET**.
+
 | Function | ESP32 GPIO |
 |---|---|
 | GPS TX → ESP RX (UART1) | 1 |
