@@ -7,6 +7,8 @@
 #include <Adafruit_ST7789.h>
 #include <Adafruit_SSD1306.h>
 #include <TinyGPSPlus.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
 
 #include "secrets.h"
 #include "web_page.h"
@@ -58,6 +60,7 @@ const unsigned long BLINK_INTERVAL_MS   = 500;
 const unsigned long REFRESH_INTERVAL_MS = 500;
 const unsigned long OLED_SWITCH_MS      = 5000;
 const unsigned long WIFI_RETRY_MS       = 10000;
+const unsigned long TFT_PAGE_MS         = 10000;
 
 // ============================================================
 // COULEURS TFT
@@ -81,8 +84,18 @@ SPIClass spiTFT(FSPI);
 Adafruit_ST7789 tft(&spiTFT, TFT_CS, TFT_DC, TFT_RST);
 Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
+// Page 2 dessinée hors écran puis envoyée d'un bloc : pas de scintillement.
+GFXcanvas16* page2Canvas = nullptr;
+
 TinyGPSPlus gps;
+TinyGPSCustom gpsQuality(gps, "GNGGA", 6);
 HardwareSerial* gpsPort = nullptr;
+
+// Dernières trames brutes, pour l'affichage "paquet GPS" de la page 2
+char nmeaLine[100];
+size_t nmeaLen = 0;
+char lastRmc[100] = "";
+char lastGga[100] = "";
 
 WebServer server(80);
 
@@ -112,8 +125,11 @@ unsigned long lastGpsActivity = 0;
 unsigned long lastOledSwitch = 0;
 unsigned long lastWifiAttempt = 0;
 
+unsigned long lastPageSwitch = 0;
+
 bool blinkState = false;
 bool showUTC = true;
+uint8_t tftPage = 0;
 
 String oldOledText = "";
 
@@ -248,11 +264,29 @@ void initGpsPort() {
 #endif
 }
 
+// Garde la dernière RMC et la dernière GGA, sans le checksum
+void captureNmea(char c) {
+  if (c == '$') nmeaLen = 0;
+  if (c == '\r' || c == '\n') {
+    if (nmeaLen > 6 && nmeaLine[0] == '$') {
+      nmeaLine[nmeaLen] = '\0';
+      char* star = strchr(nmeaLine, '*');
+      if (star) *star = '\0';
+      if (strncmp(nmeaLine + 3, "RMC", 3) == 0) strlcpy(lastRmc, nmeaLine, sizeof(lastRmc));
+      else if (strncmp(nmeaLine + 3, "GGA", 3) == 0) strlcpy(lastGga, nmeaLine, sizeof(lastGga));
+    }
+    nmeaLen = 0;
+    return;
+  }
+  if (nmeaLen < sizeof(nmeaLine) - 1) nmeaLine[nmeaLen++] = c;
+}
+
 void readGpsStream() {
   while (gpsPort && gpsPort->available()) {
     char c = gpsPort->read();
     lastGpsActivity = millis();
     gps.encode(c);
+    captureNmea(c);
   }
 }
 
@@ -529,6 +563,144 @@ void refreshDisplay() {
   updateFooter();
 }
 
+// Force le redessin complet de la page 1 au prochain refreshDisplay()
+void invalidatePage1() {
+  oldLat = oldLon = oldAlt = oldSpd = oldFix = oldStatus = oldGpsError = "\x01";
+  oldSats = 0xFFFFFFFE;
+  oldBlinkState = !blinkState;
+}
+
+// ============================================================
+// TFT PAGE 2 : RESEAU + PAQUET GPS
+// ============================================================
+
+#define C2_BG      0x0862
+#define C2_CARD    0x18E5
+#define C2_EDGE    0x2967
+#define C2_LABEL   0x8C51
+#define C2_VALUE   0xF7BE
+#define C2_RAW     0x6E7F
+
+// Texte en police lissée, positionné par le haut (les FreeFonts partent de la ligne de base)
+void drawSmooth(GFXcanvas16& g, const GFXfont* font, int x, int top, uint16_t color, const String& s) {
+  g.setFont(font);
+  g.setTextColor(color);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  g.getTextBounds("Ay", 0, 0, &bx, &by, &bw, &bh);
+  g.setCursor(x, top - by);
+  g.print(s);
+}
+
+void drawLabel(GFXcanvas16& g, int x, int y, const char* s) {
+  g.setFont(nullptr);
+  g.setTextSize(1);
+  g.setTextColor(C2_LABEL);
+  g.setCursor(x, y);
+  g.print(s);
+}
+
+void drawCard(GFXcanvas16& g, int x, int y, int w, int h, const char* title, uint16_t accent) {
+  g.fillRoundRect(x, y, w, h, 10, C2_CARD);
+  g.drawRoundRect(x, y, w, h, 10, C2_EDGE);
+  g.fillRoundRect(x + 12, y + 9, 3, 9, 1, accent);
+  drawLabel(g, x + 20, y + 10, title);
+}
+
+void drawSignalBars(GFXcanvas16& g, int x, int bottom, int rssi, bool connected) {
+  int bars = 0;
+  if (connected) {
+    if (rssi > -55) bars = 4;
+    else if (rssi > -65) bars = 3;
+    else if (rssi > -75) bars = 2;
+    else bars = 1;
+  }
+  for (int i = 0; i < 4; i++) {
+    int h = 5 + i * 4;
+    g.fillRoundRect(x + i * 7, bottom - h, 5, h, 1, i < bars ? C_GREEN : C2_EDGE);
+  }
+}
+
+void drawPage2() {
+  if (!page2Canvas) return;
+  GFXcanvas16& g = *page2Canvas;
+  g.setTextWrap(false);
+  g.fillScreen(C2_BG);
+
+  bool wifiOk = WiFi.status() == WL_CONNECTED;
+
+  // En-tête
+  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "Reseau & GPS");
+  g.fillRoundRect(186, 12, 42, 18, 9, wifiOk ? C_GREEN : C_RED);
+  g.setFont(nullptr);
+  g.setTextColor(C2_BG);
+  g.setCursor(wifiOk ? 196 : 193, 17);
+  g.print(wifiOk ? "WIFI" : "HORS");
+
+  // Carte WiFi
+  drawCard(g, 10, 42, 220, 84, "WIFI", C_ACCENT);
+  drawSignalBars(g, 194, 60, WiFi.RSSI(), wifiOk);
+  drawSmooth(g, &FreeSansBold9pt7b, 22, 28 + 42 - 4, C2_VALUE, String(WIFI_SSID));
+  drawLabel(g, 22, 90, "IP");
+  drawSmooth(g, &FreeSansBold12pt7b, 40, 84, C_ACCENT,
+             wifiOk ? WiFi.localIP().toString() : String("--"));
+  drawLabel(g, 22, 112, "GW");
+  g.setTextColor(C2_VALUE);
+  g.setCursor(40, 112);
+  g.print(GATEWAY.toString());
+  if (wifiOk) {
+    g.setCursor(150, 112);
+    g.print(String(WiFi.RSSI()) + " dBm");
+  }
+
+  // Carte paquet GPS
+  uint16_t gpsAccent = gpsError ? C_RED : (locValid ? C_GREEN : C_ORANGE);
+  drawCard(g, 10, 134, 220, 90, "PAQUET GPS", gpsAccent);
+
+  g.setFont(nullptr);
+  g.setTextColor(C2_RAW);
+  g.setCursor(22, 150);
+  g.print(String(lastRmc[0] ? lastRmc : "$--RMC (rien)").substring(0, 33));
+  g.setCursor(22, 161);
+  g.print(String(lastGga[0] ? lastGga : "$--GGA (rien)").substring(0, 33));
+
+  String utc = getUtcTimeString();
+  String satsTxt = (!gpsError && satsValid) ? String(sats) : String("--");
+  String hdopTxt = (!gpsError && gps.hdop.isValid() && locValid) ? String(gps.hdop.hdop(), 1) : String("--");
+
+  drawLabel(g, 22, 176, "UTC");
+  drawLabel(g, 112, 176, "SAT");
+  drawLabel(g, 160, 176, "HDOP");
+  drawSmooth(g, &FreeSansBold9pt7b, 22, 187, C2_VALUE, utc);
+  drawSmooth(g, &FreeSansBold9pt7b, 112, 187, C2_VALUE, satsTxt);
+  drawSmooth(g, &FreeSansBold9pt7b, 160, 187, C2_VALUE, hdopTxt);
+
+  g.setFont(nullptr);
+  g.setTextColor(C2_LABEL);
+  g.setCursor(22, 210);
+  g.print("OK " + String(gps.passedChecksum()) + "  ERR " + String(gps.failedChecksum()));
+  g.setTextColor(gpsAccent);
+  g.setCursor(148, 210);
+  g.print(gpsError ? "PAS DE DONNEES" : (locValid ? "FIX" : "RECHERCHE"));
+
+  // Indicateur de page
+  g.fillCircle(114, 232, 3, C2_EDGE);
+  g.fillCircle(126, 232, 3, C_ACCENT);
+
+  tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
+}
+
+void showTftPage(uint8_t page) {
+  tftPage = page;
+  if (tftPage == 0) {
+    drawStaticUI();
+    invalidatePage1();
+    refreshDisplay();
+  } else {
+    drawPage2();
+  }
+}
+
 // ============================================================
 // WIFI
 // ============================================================
@@ -671,6 +843,14 @@ void initTft() {
   spiTFT.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
   tft.init(240, 240);
   tft.setRotation(0);
+  tft.setSPISpeed(40000000);
+
+  page2Canvas = new GFXcanvas16(240, 240);
+  if (!page2Canvas->getBuffer()) {
+    Serial.println("Pas assez de RAM pour la page 2");
+    delete page2Canvas;
+    page2Canvas = nullptr;
+  }
 }
 
 // ============================================================
@@ -687,6 +867,7 @@ void setup() {
 
   lastGpsActivity = millis();
   lastWifiAttempt = millis();
+  lastPageSwitch = millis();
 
   connectWifi();
   initWebServer();
@@ -705,13 +886,20 @@ void loop() {
   if (millis() - lastBlink >= BLINK_INTERVAL_MS) {
     lastBlink = millis();
     blinkState = !blinkState;
-    updateFix();
+    if (tftPage == 0) updateFix();
+  }
+
+  if (millis() - lastPageSwitch >= TFT_PAGE_MS) {
+    lastPageSwitch = millis();
+    refreshGpsData();
+    showTftPage(page2Canvas ? 1 - tftPage : 0);
   }
 
   if (millis() - lastDataRefresh >= REFRESH_INTERVAL_MS) {
     lastDataRefresh = millis();
     refreshGpsData();
-    refreshDisplay();
+    if (tftPage == 0) refreshDisplay();
+    else drawPage2();
   }
 
   updateOledTime();
