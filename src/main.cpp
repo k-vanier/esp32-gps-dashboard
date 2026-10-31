@@ -13,10 +13,12 @@
 #include <Fonts/FreeSansBold18pt7b.h>
 
 #include "gps_clock.h"
+#include "gps_sats.h"
 #include "metar.h"
 #include "ntp_server.h"
 #include "secrets.h"
 #include "web_page.h"
+#include "web_pages_extra.h"
 
 // ============================================================
 // CONFIGURATION
@@ -61,6 +63,8 @@ struct NetConfig {
   IPAddress subnet  {255, 255, 255, 0};
   IPAddress dns1    {8, 8, 8, 8};
   IPAddress dns2    {8, 8, 4, 4};
+  String metarStation = METAR_STATION_VALUE;
+  String avwxToken = AVWX_TOKEN_VALUE;
 };
 
 NetConfig net;
@@ -285,6 +289,7 @@ void captureNmea(char c) {
   if (c == '\r' || c == '\n') {
     if (nmeaLen > 6 && nmeaLine[0] == '$') {
       nmeaLine[nmeaLen] = '\0';
+      gpsSatsOnSentence(nmeaLine);
       char* star = strchr(nmeaLine, '*');
       if (star) *star = '\0';
       if (strncmp(nmeaLine + 3, "RMC", 3) == 0) strlcpy(lastRmc, nmeaLine, sizeof(lastRmc));
@@ -673,7 +678,7 @@ void drawPage3() {
 
   Metar m = metarSnapshot();
 
-  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "METAR " + (m.station.length() ? m.station : String(METAR_STATION_VALUE)));
+  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "METAR " + (m.station.length() ? m.station : net.metarStation));
   if (m.valid && m.flightRules.length()) {
     uint16_t c = flightRulesColor(m.flightRules);
     g.fillRoundRect(178, 10, 50, 22, 11, c);
@@ -772,6 +777,8 @@ void loadNetConfig() {
     net.subnet  = readIp("mask", net.subnet);
     net.dns1    = readIp("dns1", net.dns1);
     net.dns2    = readIp("dns2", net.dns2);
+    net.metarStation = prefs.getString("station", net.metarStation);
+    net.avwxToken    = prefs.getString("avwx", net.avwxToken);
     Serial.println("Config reseau chargee depuis la NVS");
   }
   prefs.end();
@@ -787,6 +794,8 @@ void saveNetConfig() {
   prefs.putString("mask", net.subnet.toString());
   prefs.putString("dns1", net.dns1.toString());
   prefs.putString("dns2", net.dns2.toString());
+  prefs.putString("station", net.metarStation);
+  prefs.putString("avwx", net.avwxToken);
   prefs.end();
 }
 
@@ -904,6 +913,10 @@ String buildConfigPage(const String& message) {
   html.replace("%GW%", net.gateway.toString());
   html.replace("%DNS1%", net.dns1.toString());
   html.replace("%DNS2%", net.dns2.toString());
+  html.replace("%STATION%", htmlEscape(net.metarStation));
+  html.replace("%TOKEN_HINT%", net.avwxToken.length() >= 4
+                                   ? "Actuel : ..." + htmlEscape(net.avwxToken.substring(net.avwxToken.length() - 4))
+                                   : String("Aucun jeton"));
   return html;
 }
 
@@ -919,10 +932,21 @@ void handleConfigPost() {
   next.ssid.trim();
   if (server.arg("pass").length()) next.pass = server.arg("pass");
   next.dhcp = server.hasArg("dhcp");
+  next.metarStation = server.arg("station");
+  next.metarStation.trim();
+  next.metarStation.toUpperCase();
+  String token = server.arg("token");
+  token.trim();
+  if (token.length()) next.avwxToken = token;
+
+  bool stationOk = next.metarStation.length() == 4;
+  for (char c : next.metarStation) stationOk = stationOk && isalnum((unsigned char)c);
 
   if (next.ssid.isEmpty() || next.ssid.length() > 32) err = "SSID vide ou trop long.";
   else if (next.pass.length() && (next.pass.length() < 8 || next.pass.length() > 63))
     err = "Le mot de passe WPA doit faire 8 à 63 caractères.";
+  else if (!stationOk) err = "Le code OACI doit faire 4 lettres ou chiffres (ex. LFPG).";
+  else if (next.avwxToken.length() > 128) err = "Jeton AVWX trop long.";
 
   if (err.isEmpty() && !next.dhcp) {
     struct { const char* field; const char* name; IPAddress* dst; } fields[] = {
@@ -954,6 +978,68 @@ void handleConfigPost() {
                               where + ".</div>"));
   Serial.println("Config reseau enregistree, redemarrage");
   restartAt = millis() + 1500;
+}
+
+String jsonInt(int v, int missing) {
+  return v == missing ? String("null") : String(v);
+}
+
+String jsonStr(const String& s) {
+  return "\"" + jsonEscape(s) + "\"";
+}
+
+String buildMetarJson() {
+  Metar m = metarSnapshot();
+  String j = "{";
+  j += "\"valid\":" + String(m.valid ? "true" : "false");
+  j += ",\"error\":" + jsonStr(m.error);
+  j += ",\"station\":" + jsonStr(m.valid ? m.station : net.metarStation);
+  j += ",\"updatedMin\":" + (m.valid ? String((millis() - m.fetchedMs) / 60000) : String("null"));
+  j += ",\"raw\":" + jsonStr(m.raw);
+  j += ",\"time\":" + jsonStr(m.timeRepr);
+  j += ",\"flightRules\":" + jsonStr(m.flightRules);
+  j += ",\"wind\":{\"dir\":" + jsonInt(m.windDir, -1) + ",\"dirText\":" + jsonStr(windDirText(m.windDir)) +
+       ",\"compass\":" + jsonStr(metarCompass(m.windDir)) + ",\"speed\":" + jsonInt(m.windSpeed, -1) +
+       ",\"gust\":" + jsonInt(m.windGust, -1) + ",\"varFrom\":" + jsonInt(m.windVarFrom, -1) +
+       ",\"varTo\":" + jsonInt(m.windVarTo, -1) + ",\"unit\":" + jsonStr(m.windUnit) + "}";
+  j += ",\"visibility\":" + jsonInt(m.visibility, -1);
+  j += ",\"visibilityRepr\":" + jsonStr(m.visibilityRepr);
+  j += ",\"temperature\":" + jsonInt(m.temperature, INT16_MIN);
+  j += ",\"dewpoint\":" + jsonInt(m.dewpoint, INT16_MIN);
+  j += ",\"humidity\":" + jsonInt(m.humidity, -1);
+  j += ",\"qnh\":" + jsonInt(m.altimeter, -1);
+  j += ",\"qnhUnit\":" + jsonStr(m.altimeterUnit);
+  j += ",\"clouds\":[";
+  for (int i = 0; i < m.cloudCount; i++) {
+    if (i) j += ",";
+    j += "{\"type\":" + jsonStr(m.clouds[i].type) + ",\"altitudeFt\":" + jsonInt(m.clouds[i].altitudeFt, -1) +
+         ",\"modifier\":" + jsonStr(m.clouds[i].modifier) + ",\"text\":" + jsonStr(metarCloudText(m.clouds[i])) + "}";
+  }
+  j += "]";
+  j += ",\"weather\":" + jsonStr(m.weather);
+  j += ",\"trend\":" + jsonStr(m.trend);
+  j += "}";
+  return j;
+}
+
+String buildSatsJson() {
+  uint32_t syncAge = gpsClockSyncAgeMs();
+  String j = "{";
+  j += "\"gsv\":" + String(gpsSatsHaveGsv() ? "true" : "false");
+  j += ",\"sats\":" + gpsSatsJson();
+  j += ",\"gps\":{\"error\":" + String(gpsError ? "true" : "false") + ",\"fix\":" + jsonStr(fixText) +
+       ",\"used\":" + String(satsValid ? sats : 0) +
+       ",\"hdop\":" + (gps.hdop.isValid() && locValid ? String(gps.hdop.hdop(), 2) : String("null")) +
+       ",\"utc\":" + jsonStr(getUtcTimeString()) + ",\"france\":" + jsonStr(getFranceTimeString()) + "}";
+  j += ",\"ntp\":{\"synced\":" + String(gpsClockSynced() ? "true" : "false") +
+       ",\"source\":" + jsonStr(gpsClockUsesPps() ? "PPS" : "NMEA") +
+       ",\"stratum\":" + String(gpsClockSynced() ? 1 : 16) +
+       ",\"syncAgeMs\":" + (syncAge == UINT32_MAX ? String("null") : String(syncAge)) +
+       ",\"requests\":" + String(ntpRequestCount()) + ",\"clients\":" + ntpClientsJson() +
+       ",\"address\":" + jsonStr(WiFi.localIP().toString()) + "}";
+  j += ",\"uptimeS\":" + String(millis() / 1000);
+  j += "}";
+  return j;
 }
 
 String buildJson() {
@@ -993,23 +1079,7 @@ String buildJson() {
   json += "\"requests\":" + String(ntpRequestCount());
   json += "},";
 
-  Metar m = metarSnapshot();
-  json += "\"metar\":{";
-  json += "\"valid\":" + String(m.valid ? "true" : "false") + ",";
-  json += "\"error\":\"" + jsonEscape(m.error) + "\",";
-  json += "\"raw\":\"" + jsonEscape(m.raw) + "\",";
-  json += "\"flightRules\":\"" + jsonEscape(m.flightRules) + "\",";
-  json += "\"wind\":\"" + windDirText(m.windDir) + " " + String(m.windSpeed) +
-          " " + jsonEscape(m.windUnit) + " (" + metarCompass(m.windDir) + ")\",";
-  json += "\"temperature\":" + (m.temperature == INT16_MIN ? String("null") : String(m.temperature)) + ",";
-  json += "\"humidity\":" + String(m.humidity) + ",";
-  json += "\"qnh\":" + String(m.altimeter) + ",";
-  String clouds;
-  for (int i = 0; i < m.cloudCount; i++) clouds += (clouds.length() ? ", " : "") + metarCloudText(m.clouds[i]);
-  json += "\"clouds\":\"" + jsonEscape(clouds) + "\",";
-  json += "\"weather\":\"" + jsonEscape(m.weather) + "\",";
-  json += "\"trend\":\"" + jsonEscape(m.trend) + "\"";
-  json += "}";
+  json += "\"metar\":" + buildMetarJson();
 
 #if GPS_USE_UART1
   json += ",\"port\":\"UART1\"";
@@ -1037,6 +1107,11 @@ void handleNotFound() {
 void initWebServer() {
   server.on("/", handleRoot);
   server.on("/json", handleJson);
+  server.on("/metar", [] { server.send_P(200, "text/html; charset=utf-8", METAR_HTML); });
+  server.on("/sats", [] { server.send_P(200, "text/html; charset=utf-8", SATS_HTML); });
+  server.on("/style.css", [] { server.send_P(200, "text/css; charset=utf-8", COMMON_CSS); });
+  server.on("/metar.json", [] { server.send(200, "application/json; charset=utf-8", buildMetarJson()); });
+  server.on("/sats.json", [] { server.send(200, "application/json; charset=utf-8", buildSatsJson()); });
   server.on("/config", HTTP_GET, handleConfigGet);
   server.on("/config", HTTP_POST, handleConfigPost);
   server.onNotFound(handleNotFound);
@@ -1098,6 +1173,7 @@ void setup() {
   initOled();
   initTft();
   initGpsPort();
+  gpsSatsEnableSentences(*gpsPort);
 
   lastGpsActivity = millis();
   lastWifiAttempt = millis();
@@ -1109,7 +1185,7 @@ void setup() {
   connectWifi();
   initWebServer();
   ntpServerBegin();
-  metarBegin(METAR_STATION_VALUE, AVWX_TOKEN_VALUE);
+  metarBegin(net.metarStation.c_str(), net.avwxToken.c_str());
 
   refreshGpsData();
   drawCurrentPage();

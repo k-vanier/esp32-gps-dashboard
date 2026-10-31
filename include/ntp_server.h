@@ -6,3 +6,5 @@
 void ntpServerBegin();
 void ntpServerLoop();  // à appeler le plus souvent possible dans loop()
 uint32_t ntpRequestCount();
+// Clients récents au format JSON : [{"ip":"...","requests":n,"lastSeenS":s}, ...]
+String ntpClientsJson();

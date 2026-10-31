@@ -322,7 +322,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     </section>
 
     <div class="footer">
-      <a href="/config">Configuration réseau</a> · Données JSON sur <a href="/json">/json</a>
+      <a href="/metar">Météo METAR</a> · <a href="/sats">Satellites &amp; NTP</a> ·
+      <a href="/config">Configuration</a> · <a href="/json">JSON</a>
     </div>
   </div>
 
@@ -441,8 +442,8 @@ static const char CONFIG_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
   <div class="wrap">
-    <h1>Configuration réseau</h1>
-    <p class="sub">Enregistrée dans l'ESP32. L'appareil redémarre après l'enregistrement.</p>
+    <h1>Configuration</h1>
+    <p class="sub">Réseau et météo, enregistrés dans l'ESP32. L'appareil redémarre après l'enregistrement.</p>
     %MESSAGE%
     <form method="post" action="/config">
       <section class="card">
@@ -467,6 +468,16 @@ static const char CONFIG_HTML[] PROGMEM = R"rawliteral(
           </div>
         </div>
         <p class="hint">Si le WiFi est injoignable, l'ESP32 ouvre le point d'accès <b>ESP32-GPS-Setup</b> (mot de passe <b>gpsconfig</b>), accessible sur http://192.168.4.1/config.</p>
+      </section>
+
+      <section class="card">
+        <h2>Météo (METAR)</h2>
+        <label for="station">Code OACI de l'aéroport</label>
+        <input type="text" id="station" name="station" value="%STATION%" maxlength="4" required
+               pattern="[A-Za-z0-9]{4}" style="text-transform:uppercase" placeholder="LFPG">
+        <label for="token">Jeton API avwx.rest</label>
+        <input type="password" id="token" name="token" maxlength="128" placeholder="Laisser vide pour garder l'actuel" autocomplete="off">
+        <p class="hint">%TOKEN_HINT%. Jeton gratuit sur <a href="https://avwx.rest" target="_blank" rel="noopener">avwx.rest</a>.</p>
       </section>
 
       <div class="actions">

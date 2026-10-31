@@ -4,7 +4,14 @@ Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
 
 - **TFT ST7789 240×240** : latitude, longitude, altitude, vitesse, satellites, état du fix
 - **OLED SSD1306 128×32** : heure UTC et heure de France en alternance (toutes les 5 s)
-- **Serveur web** : page dashboard sur `/`, données brutes sur `/json`, configuration réseau sur `/config`
+- **Serveur web** :
+  - `/` : dashboard GPS
+  - `/metar` : météo METAR détaillée (rose des vents, couches nuageuses, tendance traduite)
+  - `/sats` : carte du ciel des satellites, signal par satellite, état du serveur NTP et clients récents
+  - `/config` : réseau, station METAR et jeton AVWX
+  - `/json`, `/metar.json`, `/sats.json` : données brutes
+
+Le détail des satellites vient des trames GSV et GSA. L'ESP32 les active au démarrage, par son TX (GPIO2) relié au RX du GPS. `tools/gps_config.ps1` les active aussi de façon permanente.
 
 Le TFT alterne toutes les 10 s entre la page Position (coordonnées en grand, altitude, vitesse, satellites, état NTP) et une page « Réseau & GPS » (SSID, IP, passerelle, signal, dernières trames RMC/GGA, qualité du fix, HDOP, âge de la position).
 
@@ -18,7 +25,7 @@ La page 3 du TFT affiche le METAR de la station `METAR_STATION_VALUE` (LFPG par 
 - **Ciel :** visibilité, nuages (Peu, Epars, Fragmente, Couvert), phénomènes (pluie, brouillard, orage...).
 - **Tendance :** TEMPO ou BECMG traduits, par exemple `TEMPO 0500 FG VV///` donne « Temporaire: visi 500m, brouillard, ciel invisible ».
 
-Le jeton API se met dans `include/secrets.h` (`AVWX_TOKEN_VALUE`). Le METAR décodé figure aussi dans `/json`. Le certificat HTTPS d'avwx.rest n'est pas vérifié (`setInsecure`).
+La station et le jeton API se règlent dans `/config`, où ils sont enregistrés en NVS. `include/secrets.h` (`METAR_STATION_VALUE`, `AVWX_TOKEN_VALUE`) ne fournit que les valeurs par défaut. Le METAR décodé figure aussi dans `/json`. Le certificat HTTPS d'avwx.rest n'est pas vérifié (`setInsecure`).
 
 ## Serveur NTP
 
@@ -62,7 +69,7 @@ Le firmware attend sur l'UART1 du module :
 | Réglage | Valeur |
 |---|---|
 | Débit | 38400 bauds, 8N1 |
-| Trames NMEA | RMC + GGA + ZDA (GSV, GSA, VTG, GLL coupés) |
+| Trames NMEA | RMC + GGA + GSA + GSV + ZDA (VTG, GLL coupés) |
 | Constellations | GPS + Galileo + GLONASS |
 | SBAS | EGNOS uniquement |
 | Modèle dynamique | Portable |

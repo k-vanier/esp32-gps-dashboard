@@ -10,6 +10,45 @@ static const size_t NTP_PACKET_SIZE = 48;
 static WiFiUDP udp;
 static uint32_t requests = 0;
 
+struct NtpClient {
+  uint32_t ip;
+  uint32_t requests;
+  uint32_t lastMs;
+};
+static const int MAX_CLIENTS = 8;
+static NtpClient clients[MAX_CLIENTS];
+static int clientCount = 0;
+
+static void noteClient(IPAddress ip) {
+  uint32_t key = (uint32_t)ip;
+  int slot = -1;
+  for (int i = 0; i < clientCount; i++)
+    if (clients[i].ip == key) slot = i;
+  if (slot < 0) {
+    if (clientCount < MAX_CLIENTS) {
+      slot = clientCount++;
+    } else {
+      slot = 0;  // remplace le client le plus ancien
+      for (int i = 1; i < MAX_CLIENTS; i++)
+        if (clients[i].lastMs < clients[slot].lastMs) slot = i;
+    }
+    clients[slot] = {key, 0, 0};
+  }
+  clients[slot].requests++;
+  clients[slot].lastMs = millis();
+}
+
+String ntpClientsJson() {
+  String out = "[";
+  for (int i = 0; i < clientCount; i++) {
+    if (i) out += ",";
+    out += "{\"ip\":\"" + IPAddress(clients[i].ip).toString() + "\",\"requests\":" +
+           String(clients[i].requests) + ",\"lastSeenS\":" + String((millis() - clients[i].lastMs) / 1000) + "}";
+  }
+  out += "]";
+  return out;
+}
+
 static void put32(uint8_t* p, uint32_t v) {
   p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v;
 }
@@ -66,4 +105,5 @@ void ntpServerLoop() {
   udp.write(res, NTP_PACKET_SIZE);
   udp.endPacket();
   requests++;
+  noteClient(udp.remoteIP());
 }

@@ -6,7 +6,7 @@
   - GNSS : GPS + Galileo + GLONASS (BeiDou, IMES, QZSS coupés)
   - SBAS : EGNOS uniquement (PRN 123, 126, 136)
   - NAV5 : modèle Portable, référence UTC Galileo
-  - NMEA : RMC + GGA + ZDA sur UART1 et USB, le reste coupé
+  - NMEA : RMC + GGA + GSA + GSV + ZDA sur UART1 et USB, GLL et VTG coupés
   - TP5  : PPS 1 Hz, 100 ms, front montant, aligné UTC, actif seulement avec fix
   - UART1 : 38400 bauds 8N1 (= GPS_BAUD du firmware)
   - Sauvegarde en BBR + flash, puis relecture
@@ -87,7 +87,7 @@ $nav5[0] = 0x01; $nav5[1] = 0x04; $nav5[2] = 0; $nav5[30] = 5
 Send "CFG-NAV5 (Portable)" 0x06 0x24 $nav5
 
 # --- NMEA : débit par port I2C, UART1, UART2, USB, SPI, res ---
-foreach ($m in @(@("GGA", 0x00, 1), @("GLL", 0x01, 0), @("GSA", 0x02, 0), @("GSV", 0x03, 0),
+foreach ($m in @(@("GGA", 0x00, 1), @("GLL", 0x01, 0), @("GSA", 0x02, 1), @("GSV", 0x03, 1),
                  @("RMC", 0x04, 1), @("VTG", 0x05, 0), @("ZDA", 0x08, 1))) {
   $r = [byte]$m[2]
   Send ("CFG-MSG " + $m[0] + "=" + $r) 0x06 0x01 ([byte[]]@(0xF0, $m[1], 0, $r, 0, $r, 0, 0))
