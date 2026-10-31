@@ -222,8 +222,15 @@ static bool fetchOnce() {
     int code = http.GET();
     if (code == 200) {
       ok = parse(http.getString(), m);
+    } else if (code > 0) {
+      m.error = "HTTP " + String(code);
     } else {
-      m.error = code > 0 ? "HTTP " + String(code) : String(http.errorToString(code));
+      // Détail pour diagnostiquer : résolution DNS et erreur TLS
+      IPAddress ip;
+      char tls[96] = "";
+      client.lastError(tls, sizeof(tls));
+      m.error = String(http.errorToString(code)) + " (avwx.rest=" +
+                (WiFi.hostByName("avwx.rest", ip) ? ip.toString() : String("DNS KO")) + ", TLS: " + tls + ")";
     }
     http.end();
   }

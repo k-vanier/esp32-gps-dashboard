@@ -1,6 +1,18 @@
 # ESP32 GPS Dashboard
 
-Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
+Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N : écran TFT, serveur web, serveur NTP stratum 1 et météo METAR.
+
+![Les 4 pages de l'écran TFT](docs/img/tft-pages.png)
+
+| Dashboard | Météo METAR |
+|---|---|
+| ![Dashboard web](docs/img/web-dashboard.png) | ![Page METAR](docs/img/web-metar.png) |
+| **Satellites et NTP** | **Configuration** |
+| ![Page satellites et NTP](docs/img/web-sats.png) | ![Page de configuration](docs/img/web-config.png) |
+
+*Captures anonymisées (IP, SSID, MAC et position remplacés), prises sans fix GPS, d'où l'absence de satellites.*
+
+## Fonctions
 
 - **TFT ST7789 240×240** : latitude, longitude, altitude, vitesse, satellites, état du fix
 - **OLED SSD1306 128×32** : heure UTC et heure de France en alternance (toutes les 5 s)
@@ -10,6 +22,7 @@ Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
   - `/sats` : carte du ciel des satellites, signal par satellite, état du serveur NTP et clients récents
   - `/config` : réseau, station METAR et jeton AVWX
   - `/json`, `/metar.json`, `/sats.json` : données brutes
+  - `/screen.bmp?page=0..3` : capture de l'écran TFT (ajouter `&anon=1` pour masquer IP, SSID, MAC et position)
 
 Le détail des satellites vient des trames GSV et GSA. L'ESP32 les active au démarrage, par son TX (GPIO2) relié au RX du GPS. `tools/gps_config.ps1` les active aussi de façon permanente.
 
@@ -22,9 +35,9 @@ Le TFT (style clair, fond blanc) fait défiler 4 pages toutes les 10 s, avec une
 
 Animations : barre de progression jusqu'à la page suivante, pastille de fix qui pulse, vitesse et altitude qui défilent vers la nouvelle valeur, barres WiFi qui se remplissent, flèche du vent qui tourne. Hors animation, seules la pastille et la barre de progression sont renvoyées à l'écran, pour ne pas bloquer le serveur NTP.
 
-## METAR (page 3)
+## METAR (page 4)
 
-La page 3 du TFT affiche le METAR de la station `METAR_STATION_VALUE` (LFPG par défaut), récupéré sur [avwx.rest](https://avwx.rest) toutes les 10 minutes, puis réessayé chaque minute en cas d'erreur. Les infos sont traduites en français :
+La page 4 du TFT affiche le METAR de la station `METAR_STATION_VALUE` (LFPG dans `secrets.example.h`), récupéré sur [avwx.rest](https://avwx.rest) toutes les 10 minutes, puis réessayé chaque minute en cas d'erreur. Les infos sont traduites en français :
 
 - **Règle de vol :** VFR, MVFR, IFR ou LIFR, en pastille de couleur.
 - **Vent :** direction et force, rose des vents, rafales et secteur variable.

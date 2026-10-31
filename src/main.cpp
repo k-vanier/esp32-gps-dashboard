@@ -480,9 +480,17 @@ void drawHeader(ShiftCanvas& g, const String& title, const String& pill, uint16_
   g.fillRect(0, 0, 240, 32, D_HEAD);
   drawSmooth(g, &FreeSansBold9pt7b, 12, 10, D_WHITE, title);
   if (pill.length()) {
+    int titleEnd = 12 + textWidth(g, &FreeSansBold9pt7b, title) + 8;
     int w = textWidth(g, &FreeSansBold9pt7b, pill) + 18;
-    g.fillRoundRect(230 - w, 6, w, 21, 10, pillColor);
-    drawSmooth(g, &FreeSansBold9pt7b, 239 - w, 10, D_WHITE, pill);
+    if (230 - w >= titleEnd) {
+      g.fillRoundRect(230 - w, 6, w, 21, 10, pillColor);
+      drawSmooth(g, &FreeSansBold9pt7b, 239 - w, 10, D_WHITE, pill);
+    } else {
+      // Pas la place à côté du titre : pastille en petite police
+      w = pill.length() * 6 + 14;
+      g.fillRoundRect(230 - w, 7, w, 19, 9, pillColor);
+      drawLabel(g, 237 - w, 13, pill, D_WHITE);
+    }
   }
 }
 
@@ -507,6 +515,14 @@ int drawWrapped(ShiftCanvas& g, int x, int y, int maxChars, int maxLines, uint16
   return line;
 }
 
+// Captures d'écran anonymisées (/screen.bmp?anon) : valeurs fictives à la place des infos perso
+bool screenAnon = false;
+
+String shownIp(const String& real) { return screenAnon ? String("192.168.1.50") : real; }
+String shownGateway(const String& real) { return screenAnon ? String("192.168.1.1") : real; }
+String shownSsid(const String& real) { return screenAnon ? String("MonReseauWiFi") : real; }
+String shownMac(const String& real) { return screenAnon ? String("AA:BB:CC:11:22:33") : real; }
+
 // ---------- Page 1 : position ----------
 
 uint16_t fixPillColor(uint32_t now) {
@@ -519,6 +535,7 @@ uint16_t fixPillColor(uint32_t now) {
 void drawCoord(ShiftCanvas& g, int labelY, const char* label, double v, char pos, char neg) {
   drawLabel(g, 12, labelY, label);
   bool ok = !gpsError && locValid;
+  if (screenAnon && ok) v = (pos == 'N') ? 48.85837 : 2.29448;
   String txt = ok ? fmtCoord(fabs(v), 5) : String("--.-----");
   drawSmooth(g, &FreeSansBold18pt7b, 12, labelY + 13, ok ? D_TEXT : D_DIV, txt);
   if (ok) {
@@ -569,16 +586,16 @@ void drawPageNetwork(ShiftCanvas& g, uint32_t now) {
              wifiOk ? D_BLUE : (ap ? D_AMBER : D_RED));
 
   drawLabel(g, 12, 42, ap ? "ADRESSE DU POINT D'ACCES" : "ADRESSE IP");
-  String ip = wifiOk ? WiFi.localIP().toString() : (ap ? WiFi.softAPIP().toString() : String("--"));
+  String ip = wifiOk ? shownIp(WiFi.localIP().toString()) : (ap ? WiFi.softAPIP().toString() : String("--"));
   drawSmooth(g, &FreeSansBold18pt7b, 12, 56, D_BLUE, ip);
   drawDivider(g, 96);
 
   drawLabel(g, 12, 106, ap ? "RESEAU A REJOINDRE" : "SSID");
-  drawSmooth(g, &FreeSansBold12pt7b, 12, 120, D_TEXT, ap ? String(SETUP_AP_SSID) : net.ssid);
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 120, D_TEXT, ap ? String(SETUP_AP_SSID) : shownSsid(net.ssid));
 
   drawLabel(g, 12, 152, ap ? "MOT DE PASSE" : (net.dhcp ? "PASSERELLE (DHCP)" : "PASSERELLE"));
   drawSmooth(g, &FreeSansBold9pt7b, 12, 166, D_TEXT,
-             ap ? String(SETUP_AP_PASS) : (wifiOk ? WiFi.gatewayIP() : net.gateway).toString());
+             ap ? String(SETUP_AP_PASS) : shownGateway((wifiOk ? WiFi.gatewayIP() : net.gateway).toString()));
 
   drawLabel(g, 140, 152, "SIGNAL");
   // Barres qui se remplissent une à une à l'arrivée sur la page
@@ -591,7 +608,7 @@ void drawPageNetwork(ShiftCanvas& g, uint32_t now) {
   }
   if (wifiOk) drawSmooth(g, &FreeSansBold9pt7b, 178, 168, D_TEXT, String(WiFi.RSSI()) + "dB");
 
-  drawLabel(g, 12, 216, "MAC " + WiFi.macAddress());
+  drawLabel(g, 12, 216, "MAC " + shownMac(WiFi.macAddress()));
 }
 
 // ---------- Page 3 : paquet GPS ----------
@@ -605,9 +622,11 @@ void drawPageGpsPacket(ShiftCanvas& g, uint32_t now) {
   g.setFont(nullptr);
   g.setTextColor(D_TEXT);
   g.setCursor(14, 48);
-  g.print(String(lastRmc[0] ? lastRmc : "$--RMC (rien)").substring(0, 35));
+  // Les trames brutes contiennent la position : remplacées par un exemple en capture anonymisée
+  bool anonRaw = screenAnon && locValid;
+  g.print(String(anonRaw ? "$GNRMC,123519.00,A,4851.502,N,00217" : (lastRmc[0] ? lastRmc : "$--RMC (rien)")).substring(0, 35));
   g.setCursor(14, 63);
-  g.print(String(lastGga[0] ? lastGga : "$--GGA (rien)").substring(0, 35));
+  g.print(String(anonRaw ? "$GNGGA,123519.00,4851.502,N,00217.6" : (lastGga[0] ? lastGga : "$--GGA (rien)")).substring(0, 35));
 
   String qual = "--";
   if (!gpsError && gpsQuality.isValid()) {
@@ -617,20 +636,20 @@ void drawPageGpsPacket(ShiftCanvas& g, uint32_t now) {
   String hdop = !gpsError && gps.hdop.isValid() && locValid ? String(gps.hdop.hdop(), 1) : String("--");
   String age = !gpsError && gps.location.isValid() ? String(gps.location.age() / 1000.0, 1) + "s" : String("--");
   drawLabel(g, 12, 92, "QUALITE");
-  drawLabel(g, 100, 92, "HDOP");
-  drawLabel(g, 168, 92, "AGE");
+  drawLabel(g, 116, 92, "HDOP");
+  drawLabel(g, 176, 92, "AGE");
   drawSmooth(g, &FreeSansBold12pt7b, 12, 106, D_TEXT, qual);
-  drawSmooth(g, &FreeSansBold12pt7b, 100, 106, D_TEXT, hdop);
-  drawSmooth(g, &FreeSansBold12pt7b, 168, 106, D_TEXT, age);
+  drawSmooth(g, &FreeSansBold12pt7b, 116, 106, D_TEXT, hdop);
+  drawSmooth(g, &FreeSansBold12pt7b, 176, 106, D_TEXT, age);
   drawDivider(g, 136);
 
   drawLabel(g, 12, 146, "TRAMES OK");
-  drawLabel(g, 100, 146, "ERREURS");
-  drawLabel(g, 168, 146, "OCTETS");
+  drawLabel(g, 116, 146, "ERREURS");
+  drawLabel(g, 176, 146, "OCTETS");
   drawSmooth(g, &FreeSansBold12pt7b, 12, 160, D_GREEN, String(gps.passedChecksum()));
-  drawSmooth(g, &FreeSansBold12pt7b, 100, 160, gps.failedChecksum() ? D_RED : D_TEXT, String(gps.failedChecksum()));
+  drawSmooth(g, &FreeSansBold12pt7b, 116, 160, gps.failedChecksum() ? D_RED : D_TEXT, String(gps.failedChecksum()));
   uint32_t chars = gps.charsProcessed();
-  drawSmooth(g, &FreeSansBold12pt7b, 168, 160, D_TEXT,
+  drawSmooth(g, &FreeSansBold12pt7b, 176, 160, D_TEXT,
              chars >= 1000000 ? String(chars / 1000000.0, 1) + "M" : (chars >= 1000 ? String(chars / 1000) + "k" : String(chars)));
 
   drawLabel(g, 12, 216, String(GPS_USE_UART1 ? "UART1" : "UART2") + "  " + String(GPS_BAUD) + " bauds");
@@ -740,6 +759,45 @@ void drawPage(uint8_t page, int16_t ox, uint32_t now) {
     default: drawPageMetar(g, now); break;
   }
   g.setOffset(0);
+}
+
+// Capture BMP 240x240 RGB565 d'une page, animations d'arrivée terminées
+void handleScreenshot() {
+  if (!tftCanvas) {
+    server.send(503, "text/plain", "Pas de canvas");
+    return;
+  }
+  int page = server.hasArg("page") ? constrain(server.arg("page").toInt(), 0, TFT_PAGE_COUNT - 1) : tftPage;
+  uint32_t savedEnter = pageEnterMs;
+  pageEnterMs = millis() - 10000;
+  screenAnon = server.hasArg("anon");
+  drawPage(page, 0, millis());
+  screenAnon = false;
+  pageEnterMs = savedEnter;
+
+  const uint32_t dataSize = 240 * 240 * 2, offset = 14 + 40 + 12;
+  uint8_t hdr[66] = {'B', 'M'};
+  auto put32 = [&](int at, uint32_t v) { memcpy(hdr + at, &v, 4); };
+  auto put16 = [&](int at, uint16_t v) { memcpy(hdr + at, &v, 2); };
+  put32(2, offset + dataSize);
+  put32(10, offset);
+  put32(14, 40);          // BITMAPINFOHEADER
+  put32(18, 240);
+  put32(22, 240);         // hauteur positive : lignes de bas en haut
+  put16(26, 1);
+  put16(28, 16);
+  put32(30, 3);           // BI_BITFIELDS
+  put32(34, dataSize);
+  put32(54, 0xF800);      // masques RGB565
+  put32(58, 0x07E0);
+  put32(62, 0x001F);
+
+  server.setContentLength(offset + dataSize);
+  server.send(200, "image/bmp", "");
+  server.sendContent((const char*)hdr, sizeof(hdr));
+  const uint16_t* buf = tftCanvas->getBuffer();
+  for (int y = 239; y >= 0; y--) server.sendContent((const char*)(buf + y * 240), 480);
+  lastFullPushMs = 0;  // la prochaine image redessine l'écran réel
 }
 
 void pushRegion(int x, int y, int w, int h) {
@@ -1090,6 +1148,8 @@ String buildSatsJson() {
        ",\"requests\":" + String(ntpRequestCount()) + ",\"clients\":" + ntpClientsJson() +
        ",\"address\":" + jsonStr(WiFi.localIP().toString()) + "}";
   j += ",\"uptimeS\":" + String(millis() / 1000);
+  j += ",\"heap\":{\"free\":" + String(ESP.getFreeHeap()) + ",\"maxBlock\":" + String(ESP.getMaxAllocHeap()) +
+       ",\"minFree\":" + String(ESP.getMinFreeHeap()) + "}";
   j += "}";
   return j;
 }
@@ -1162,6 +1222,7 @@ void initWebServer() {
   server.on("/metar", [] { server.send_P(200, "text/html; charset=utf-8", METAR_HTML); });
   server.on("/sats", [] { server.send_P(200, "text/html; charset=utf-8", SATS_HTML); });
   server.on("/style.css", [] { server.send_P(200, "text/css; charset=utf-8", COMMON_CSS); });
+  server.on("/screen.bmp", handleScreenshot);
   server.on("/metar.json", [] { server.send(200, "application/json; charset=utf-8", buildMetarJson()); });
   server.on("/sats.json", [] { server.send(200, "application/json; charset=utf-8", buildSatsJson()); });
   server.on("/config", HTTP_GET, handleConfigGet);
