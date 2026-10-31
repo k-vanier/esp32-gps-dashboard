@@ -8,6 +8,18 @@ Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N :
 
 Le TFT alterne toutes les 10 s entre la page Position (coordonnées en grand, altitude, vitesse, satellites, état NTP) et une page « Réseau & GPS » (SSID, IP, passerelle, signal, dernières trames RMC/GGA, qualité du fix, HDOP, âge de la position).
 
+## METAR (page 3)
+
+La page 3 du TFT affiche le METAR de la station `METAR_STATION_VALUE` (LFPG par défaut), récupéré sur [avwx.rest](https://avwx.rest) toutes les 10 minutes, puis réessayé chaque minute en cas d'erreur. Les infos sont traduites en français :
+
+- **Règle de vol :** VFR, MVFR, IFR ou LIFR, en pastille de couleur.
+- **Vent :** direction et force, rose des vents, rafales et secteur variable.
+- **Mesures :** température et point de rosée, humidité, QNH.
+- **Ciel :** visibilité, nuages (Peu, Epars, Fragmente, Couvert), phénomènes (pluie, brouillard, orage...).
+- **Tendance :** TEMPO ou BECMG traduits, par exemple `TEMPO 0500 FG VV///` donne « Temporaire: visi 500m, brouillard, ciel invisible ».
+
+Le jeton API se met dans `include/secrets.h` (`AVWX_TOKEN_VALUE`). Le METAR décodé figure aussi dans `/json`. Le certificat HTTPS d'avwx.rest n'est pas vérifié (`setInsecure`).
+
 ## Serveur NTP
 
 L'ESP32 répond aux requêtes NTP (UDP/123) avec l'heure GPS, en stratum 1.

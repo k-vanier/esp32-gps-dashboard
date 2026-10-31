@@ -13,6 +13,7 @@
 #include <Fonts/FreeSansBold18pt7b.h>
 
 #include "gps_clock.h"
+#include "metar.h"
 #include "ntp_server.h"
 #include "secrets.h"
 #include "web_page.h"
@@ -78,6 +79,7 @@ const unsigned long REFRESH_INTERVAL_MS = 500;
 const unsigned long OLED_SWITCH_MS      = 5000;
 const unsigned long WIFI_RETRY_MS       = 10000;
 const unsigned long TFT_PAGE_MS         = 10000;
+const int TFT_PAGE_COUNT                = 3;
 
 // ============================================================
 // COULEURS TFT
@@ -173,6 +175,13 @@ String fmtSpeed(double v) {
 
 String safeValue(bool valid, const String& value, const String& fallback = "--") {
   return valid ? value : fallback;
+}
+
+String windDirText(int deg) {
+  if (deg < 0) return "VRB";
+  char buf[4];
+  snprintf(buf, sizeof(buf), "%03d", deg);
+  return String(buf);
 }
 
 // ============================================================
@@ -418,6 +427,12 @@ void drawCard(GFXcanvas16& g, int x, int y, int w, int h, const char* title, uin
   drawLabel(g, x + 20, y + 10, title);
 }
 
+void drawPageDots(GFXcanvas16& g) {
+  for (int i = 0; i < TFT_PAGE_COUNT; i++) {
+    g.fillCircle(120 + (i * 2 - (TFT_PAGE_COUNT - 1)) * 6, 236, 2, i == tftPage ? C_ACCENT : C2_EDGE);
+  }
+}
+
 void drawSignalBars(GFXcanvas16& g, int x, int bottom, int rssi, bool connected) {
   int bars = 0;
   if (connected) {
@@ -504,9 +519,7 @@ void drawPage2() {
   g.setCursor(148, 210);
   g.print(gpsError ? "PAS DE DONNEES" : (locValid ? "FIX" : "RECHERCHE"));
 
-  // Indicateur de page
-  g.fillCircle(114, 236, 2, C2_EDGE);
-  g.fillCircle(126, 236, 2, C_ACCENT);
+  drawPageDots(g);
 
   tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
 }
@@ -581,16 +594,162 @@ void drawPage1() {
   g.setCursor(222 - netTxt.length() * 6, 219);
   g.print(netTxt);
 
-  // Indicateur de page
-  g.fillCircle(114, 236, 2, C_ACCENT);
-  g.fillCircle(126, 236, 2, C2_EDGE);
+  drawPageDots(g);
+  tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
+}
 
+// ============================================================
+// TFT PAGE 3 : METAR
+// ============================================================
+
+uint16_t flightRulesColor(const String& r) {
+  if (r == "VFR") return C_GREEN;
+  if (r == "MVFR") return 0x5D9F;   // bleu
+  if (r == "IFR") return C_RED;
+  if (r == "LIFR") return 0xF81F;   // magenta
+  return C2_LABEL;
+}
+
+// Rose : la flèche indique où va le vent (il vient de la direction opposée)
+void drawWindRose(GFXcanvas16& g, int cx, int cy, int r, int dirDeg) {
+  g.drawCircle(cx, cy, r, C2_EDGE);
+  for (int i = 0; i < 4; i++) {
+    float a = i * HALF_PI;
+    g.drawLine(cx + (r - 4) * sin(a), cy - (r - 4) * cos(a), cx + r * sin(a), cy - r * cos(a), C2_LABEL);
+  }
+  g.setFont(nullptr);
+  g.setTextColor(C2_LABEL);
+  g.setCursor(cx - 2, cy - r - 9);
+  g.print("N");
+  if (dirDeg < 0) {
+    g.fillCircle(cx, cy, 3, C_ACCENT);
+    return;
+  }
+  float a = radians(dirDeg + 180);
+  int tx = cx + (r - 3) * sin(a), ty = cy - (r - 3) * cos(a);       // pointe
+  int bx = cx - (r - 6) * sin(a), by = cy + (r - 6) * cos(a);       // queue
+  float pa = a + PI;
+  int lx = tx + 8 * sin(pa - 0.45), ly = ty - 8 * cos(pa - 0.45);
+  int rx = tx + 8 * sin(pa + 0.45), ry = ty - 8 * cos(pa + 0.45);
+  g.drawLine(bx, by, tx, ty, C_ACCENT);
+  g.drawLine(bx + 1, by, tx + 1, ty, C_ACCENT);
+  g.fillTriangle(tx, ty, lx, ly, rx, ry, C_ACCENT);
+}
+
+// Texte 6x8 sur plusieurs lignes, coupé aux espaces
+int drawWrapped(GFXcanvas16& g, int x, int y, int maxChars, int maxLines, uint16_t color, const String& s) {
+  g.setFont(nullptr);
+  g.setTextColor(color);
+  int line = 0;
+  int pos = 0;
+  while (pos < (int)s.length() && line < maxLines) {
+    int end = min<int>(pos + maxChars, s.length());
+    if (end < (int)s.length()) {
+      int sp = s.lastIndexOf(' ', end);
+      if (sp > pos) end = sp;
+    }
+    g.setCursor(x, y + line * 10);
+    g.print(s.substring(pos, end));
+    pos = end;
+    while (pos < (int)s.length() && s[pos] == ' ') pos++;
+    line++;
+  }
+  return line;
+}
+
+void drawDegrees(GFXcanvas16& g, const GFXfont* font, int x, int top, uint16_t color, const String& value) {
+  drawSmooth(g, font, x, top, color, value);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  g.getTextBounds(value, 0, 0, &bx, &by, &bw, &bh);
+  g.drawCircle(x + bw + 5, top + 3, 2, color);
+}
+
+void drawPage3() {
+  if (!tftCanvas) return;
+  GFXcanvas16& g = *tftCanvas;
+  g.setTextWrap(false);
+  g.fillScreen(C2_BG);
+
+  Metar m = metarSnapshot();
+
+  drawSmooth(g, &FreeSansBold12pt7b, 14, 12, C2_VALUE, "METAR " + (m.station.length() ? m.station : String(METAR_STATION_VALUE)));
+  if (m.valid && m.flightRules.length()) {
+    uint16_t c = flightRulesColor(m.flightRules);
+    g.fillRoundRect(178, 10, 50, 22, 11, c);
+    drawSmooth(g, &FreeSansBold9pt7b, 203 - m.flightRules.length() * 5, 14, C2_BG, m.flightRules);
+  }
+
+  if (!m.valid) {
+    drawCard(g, 10, 52, 220, 80, "METEO", C_ORANGE);
+    drawSmooth(g, &FreeSansBold9pt7b, 22, 74, C2_VALUE,
+               WiFi.status() == WL_CONNECTED ? "Chargement..." : "Pas de WiFi");
+    if (m.error.length()) drawWrapped(g, 22, 100, 33, 2, C_RED, m.error);
+    drawPageDots(g);
+    tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
+    return;
+  }
+
+  // Heure d'observation
+  String obs = m.timeRepr.length() >= 6
+                   ? "Observe le " + m.timeRepr.substring(0, 2) + " a " + m.timeRepr.substring(2, 4) + "h" +
+                         m.timeRepr.substring(4, 6) + " UTC"
+                   : String("");
+  uint32_t ageMin = (millis() - m.fetchedMs) / 60000;
+  drawLabel(g, 14, 38, (obs + "  (maj " + String(ageMin) + " min)").c_str());
+
+  // Vent
+  drawCard(g, 10, 50, 220, 62, "VENT", C_ACCENT);
+  drawWindRose(g, 196, 84, 18, m.windDir);
+  String wind;
+  if (m.windSpeed == 0) wind = "Calme";
+  else wind = windDirText(m.windDir) + "  " + String(m.windSpeed) + " " + m.windUnit;
+  drawSmooth(g, &FreeSansBold12pt7b, 22, 68, C2_VALUE, wind);
+  String windSub = m.windDir >= 0 ? String("du ") + metarCompass(m.windDir) : String("direction variable");
+  if (m.windGust > 0) windSub += ", rafales " + String(m.windGust) + " " + m.windUnit;
+  if (m.windVarFrom >= 0) windSub += ", var " + String(m.windVarFrom) + "-" + String(m.windVarTo);
+  drawWrapped(g, 22, 96, 26, 1, C2_LABEL, windSub);
+
+  // Température, humidité, pression
+  bool hasT = m.temperature != INT16_MIN;
+  g.fillRoundRect(10, 118, 70, 46, 8, C2_CARD);
+  g.drawRoundRect(10, 118, 70, 46, 8, C2_EDGE);
+  drawLabel(g, 18, 125, "TEMP");
+  if (hasT) drawDegrees(g, &FreeSansBold12pt7b, 18, 137, C2_VALUE, String(m.temperature));
+  else drawSmooth(g, &FreeSansBold12pt7b, 18, 137, C2_VALUE, "--");
+  if (m.dewpoint != INT16_MIN) drawLabel(g, 50, 125, ("r" + String(m.dewpoint)).c_str());
+
+  drawTile(g, 85, 118, 70, 46, "HUMIDITE", m.humidity >= 0 ? String(m.humidity) + "%" : String("--"),
+           nullptr, C_ACCENT);
+  drawTile(g, 160, 118, 70, 46, "QNH", m.altimeter >= 0 ? String(m.altimeter) : String("--"),
+           nullptr, C2_VALUE);
+
+  // Ciel, visibilité, phénomènes, tendance
+  drawCard(g, 10, 170, 220, 62, "CIEL", flightRulesColor(m.flightRules));
+  String sky;
+  if (m.visibilityRepr == "CAVOK") sky = "CAVOK";
+  else if (m.visibility >= 9999) sky = "Visi 10 km+";
+  else if (m.visibility >= 0) sky = "Visi " + (m.visibility >= 5000 ? String(m.visibility / 1000) + " km"
+                                                                 : String(m.visibility) + " m");
+  drawSmooth(g, &FreeSansBold9pt7b, 64, 177, C2_VALUE, sky);
+
+  String detail;
+  for (int i = 0; i < m.cloudCount; i++) detail += (detail.length() ? ", " : "") + metarCloudText(m.clouds[i]);
+  if (m.weather.length()) detail += (detail.length() ? ", " : "") + m.weather;
+  if (detail.isEmpty() && m.visibilityRepr != "CAVOK") detail = "pas de nuages significatifs";
+
+  int y = 196;
+  if (detail.length()) y += 10 * drawWrapped(g, 22, y, 33, 1, C2_VALUE, detail);
+  if (m.trend.length()) drawWrapped(g, 22, y, 33, (226 - y) / 10, C_ORANGE, m.trend);
+
+  drawPageDots(g);
   tft.drawRGBBitmap(0, 0, g.getBuffer(), 240, 240);
 }
 
 void drawCurrentPage() {
   if (tftPage == 0) drawPage1();
-  else drawPage2();
+  else if (tftPage == 1) drawPage2();
+  else drawPage3();
 }
 
 // ============================================================
@@ -832,6 +991,24 @@ String buildJson() {
   uint32_t syncAge = gpsClockSyncAgeMs();
   json += "\"syncAgeMs\":" + (syncAge == UINT32_MAX ? String("null") : String(syncAge)) + ",";
   json += "\"requests\":" + String(ntpRequestCount());
+  json += "},";
+
+  Metar m = metarSnapshot();
+  json += "\"metar\":{";
+  json += "\"valid\":" + String(m.valid ? "true" : "false") + ",";
+  json += "\"error\":\"" + jsonEscape(m.error) + "\",";
+  json += "\"raw\":\"" + jsonEscape(m.raw) + "\",";
+  json += "\"flightRules\":\"" + jsonEscape(m.flightRules) + "\",";
+  json += "\"wind\":\"" + windDirText(m.windDir) + " " + String(m.windSpeed) +
+          " " + jsonEscape(m.windUnit) + " (" + metarCompass(m.windDir) + ")\",";
+  json += "\"temperature\":" + (m.temperature == INT16_MIN ? String("null") : String(m.temperature)) + ",";
+  json += "\"humidity\":" + String(m.humidity) + ",";
+  json += "\"qnh\":" + String(m.altimeter) + ",";
+  String clouds;
+  for (int i = 0; i < m.cloudCount; i++) clouds += (clouds.length() ? ", " : "") + metarCloudText(m.clouds[i]);
+  json += "\"clouds\":\"" + jsonEscape(clouds) + "\",";
+  json += "\"weather\":\"" + jsonEscape(m.weather) + "\",";
+  json += "\"trend\":\"" + jsonEscape(m.trend) + "\"";
   json += "}";
 
 #if GPS_USE_UART1
@@ -932,6 +1109,7 @@ void setup() {
   connectWifi();
   initWebServer();
   ntpServerBegin();
+  metarBegin(METAR_STATION_VALUE, AVWX_TOKEN_VALUE);
 
   refreshGpsData();
   drawCurrentPage();
@@ -949,7 +1127,7 @@ void loop() {
 
   if (millis() - lastPageSwitch >= TFT_PAGE_MS) {
     lastPageSwitch = millis();
-    tftPage = 1 - tftPage;
+    tftPage = (tftPage + 1) % TFT_PAGE_COUNT;
     lastDataRefresh = 0;
   }
 
