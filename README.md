@@ -1,124 +1,128 @@
 # ESP32 GPS Dashboard
 
-Tableau de bord GPS sur ESP32-C6 avec un u-blox NEO-M8N : écran TFT, serveur web, serveur NTP stratum 1 et météo METAR.
+GPS dashboard on an ESP32-C6 with a u-blox NEO-M8N: TFT screen, web server, stratum 1 NTP server and METAR weather.
 
-![Les 4 pages de l'écran TFT](docs/img/tft-pages.png)
+![The 4 pages of the TFT screen](docs/img/tft-pages.png)
 
-| Dashboard | Météo METAR |
+| Dashboard | METAR weather |
 |---|---|
-| ![Dashboard web](docs/img/web-dashboard.png) | ![Page METAR](docs/img/web-metar.png) |
-| **Satellites et NTP** | **Configuration** |
-| ![Page satellites et NTP](docs/img/web-sats.png) | ![Page de configuration](docs/img/web-config.png) |
+| ![Web dashboard](docs/img/web-dashboard.png) | ![METAR page](docs/img/web-metar.png) |
+| **Satellites and NTP** | **Configuration** |
+| ![Satellites and NTP page](docs/img/web-sats.png) | ![Configuration page](docs/img/web-config.png) |
 
-*Captures anonymisées (IP, SSID, MAC et position remplacés), prises sans fix GPS, d'où l'absence de satellites.*
+*Anonymized screenshots (IP, SSID, MAC and position replaced), taken without a GPS fix, hence no satellites.*
 
-## Fonctions
+The user interface (TFT and web pages) is in French.
 
-- **TFT ST7789 240×240** : latitude, longitude, altitude, vitesse, satellites, état du fix
-- **OLED SSD1306 128×32** : heure UTC et heure de France en alternance (toutes les 5 s)
-- **Serveur web** :
-  - `/` : dashboard GPS
-  - `/metar` : météo METAR détaillée (rose des vents, couches nuageuses, tendance traduite)
-  - `/sats` : carte du ciel des satellites, signal par satellite, état du serveur NTP et clients récents
-  - `/config` : réseau, station METAR et jeton AVWX
-  - `/json`, `/metar.json`, `/sats.json` : données brutes
-  - `/screen.bmp?page=0..3` : capture de l'écran TFT (ajouter `&anon=1` pour masquer IP, SSID, MAC et position)
+## Features
 
-Le détail des satellites vient des trames GSV et GSA. L'ESP32 les active au démarrage, par son TX (GPIO2) relié au RX du GPS. `tools/gps_config.ps1` les active aussi de façon permanente.
+- **TFT ST7789 240×240**: latitude, longitude, altitude, speed, satellites, fix status
+- **OLED SSD1306 128×32**: UTC and French local time, alternating every 5 s
+- **Web server**:
+  - `/`: GPS dashboard
+  - `/metar`: detailed METAR weather (wind rose, cloud layers, decoded trend)
+  - `/sats`: satellite sky plot, per-satellite signal, NTP server status and recent clients
+  - `/config`: network, METAR station and AVWX token
+  - `/json`, `/metar.json`, `/sats.json`: raw data
+  - `/screen.bmp?page=0..3`: TFT screenshot (add `&anon=1` to hide IP, SSID, MAC and position)
 
-Le TFT (style clair, fond blanc) fait défiler 4 pages toutes les 10 s, avec une transition glissée :
+Satellite details come from the GSV and GSA sentences. The ESP32 enables them at boot through its TX pin (GPIO2) wired to the GPS RX. `tools/gps_config.ps1` also enables them permanently.
 
-1. **Position** : coordonnées en grand, altitude, vitesse, satellites, état NTP
-2. **Réseau** : IP, SSID, passerelle, signal, MAC (ou infos du point d'accès de secours)
-3. **Paquet GPS** : dernières trames RMC/GGA, qualité du fix, HDOP, âge, compteurs de trames
-4. **METAR** : vent avec rose, température, humidité, QNH, ciel, tendance
+The TFT (light theme, white background) cycles through 4 pages every 10 s, with a slide transition:
 
-Animations : barre de progression jusqu'à la page suivante, pastille de fix qui pulse, vitesse et altitude qui défilent vers la nouvelle valeur, barres WiFi qui se remplissent, flèche du vent qui tourne. Hors animation, seules la pastille et la barre de progression sont renvoyées à l'écran, pour ne pas bloquer le serveur NTP.
+1. **Position**: large coordinates, altitude, speed, satellites, NTP status
+2. **Network**: IP, SSID, gateway, signal, MAC (or the fallback access point details)
+3. **GPS packet**: latest RMC, GGA, GSA and GSV sentences, fix quality, HDOP, age, sentence counters
+4. **METAR**: wind with rose, temperature, humidity, QNH, sky, trend
+
+Animations: progress bar until the next page, pulsing fix badge, speed and altitude rolling to the new value, WiFi bars filling up, wind arrow turning. Outside animations, only the badge and the progress bar are sent to the screen, so the NTP server isn't blocked.
 
 ## METAR (page 4)
 
-La page 4 du TFT affiche le METAR de la station `METAR_STATION_VALUE` (LFPG dans `secrets.example.h`), récupéré sur [avwx.rest](https://avwx.rest) toutes les 10 minutes, puis réessayé chaque minute en cas d'erreur. Les infos sont traduites en français :
+Page 4 of the TFT shows the METAR for the station `METAR_STATION_VALUE` (LFPG in `secrets.example.h`), fetched from [avwx.rest](https://avwx.rest) every 10 minutes and retried every minute on error. The data is decoded and translated into French:
 
-- **Règle de vol :** VFR, MVFR, IFR ou LIFR, en pastille de couleur.
-- **Vent :** direction et force, rose des vents, rafales et secteur variable.
-- **Mesures :** température et point de rosée, humidité, QNH.
-- **Ciel :** visibilité, nuages (Peu, Epars, Fragmente, Couvert), phénomènes (pluie, brouillard, orage...).
-- **Tendance :** TEMPO ou BECMG traduits, par exemple `TEMPO 0500 FG VV///` donne « Temporaire: visi 500m, brouillard, ciel invisible ».
+- **Flight rules:** VFR, MVFR, IFR or LIFR, as a colored badge.
+- **Wind:** direction and speed, wind rose, gusts and variable sector.
+- **Measurements:** temperature and dew point, humidity, QNH.
+- **Sky:** visibility, clouds (few, scattered, broken, overcast), weather (rain, fog, thunderstorm...).
+- **Trend:** TEMPO or BECMG decoded, for example `TEMPO 0500 FG VV///` becomes "Temporaire: visi 500m, brouillard, ciel invisible" (temporarily: visibility 500 m, fog, sky obscured).
 
-La station et le jeton API se règlent dans `/config`, où ils sont enregistrés en NVS. `include/secrets.h` (`METAR_STATION_VALUE`, `AVWX_TOKEN_VALUE`) ne fournit que les valeurs par défaut. Le METAR décodé figure aussi dans `/json`. Le certificat HTTPS d'avwx.rest n'est pas vérifié (`setInsecure`).
+The station and the API token are set in `/config`, where they're stored in NVS. `include/secrets.h` (`METAR_STATION_VALUE`, `AVWX_TOKEN_VALUE`) only provides the defaults. The decoded METAR is also available in `/json`. The avwx.rest HTTPS certificate isn't verified (`setInsecure`).
 
-## Serveur NTP
+## NTP server
 
-L'ESP32 répond aux requêtes NTP (UDP/123) avec l'heure GPS, en stratum 1.
+The ESP32 answers NTP requests (UDP/123) with GPS time, as stratum 1.
 
-- **Sans fix :** il répond « non synchronisé » (LI = 3, stratum 16), donc les clients ignorent son heure.
-- **Sans PPS (par défaut) :** le début de chaque seconde est estimé à l'arrivée de la trame RMC, moins une latence fixe (`NMEA_LATENCY_US` dans `src/gps_clock.cpp`, 60 ms). La précision est de l'ordre de ±50 ms. On peut ajuster cette latence en comparant avec un serveur NTP de référence.
-- **Avec PPS :** relier la broche TIMEPULSE du GPS à une GPIO libre et renseigner `GPS_PPS_PIN` dans `src/main.cpp`. Le front montant donne alors le début exact de la seconde (refid `PPS`).
-- **Hors synchro :** si plus aucune trame RMC valide n'arrive pendant 30 s, le serveur repasse en « non synchronisé ».
+- **No fix:** it answers "unsynchronized" (LI = 3, stratum 16), so clients ignore its time.
+- **Without PPS (default):** the start of each second is estimated from the arrival of the RMC sentence, minus a fixed latency (`NMEA_LATENCY_US` in `src/gps_clock.cpp`, 60 ms). Accuracy is around ±50 ms. You can tune this latency by comparing against a reference NTP server.
+- **With PPS:** wire the GPS TIMEPULSE pin to a free GPIO and set `GPS_PPS_PIN` in `src/main.cpp`. The rising edge then gives the exact start of the second (refid `PPS`).
+- **Losing sync:** if no valid RMC sentence arrives for 30 s, the server goes back to "unsynchronized".
 
-Test depuis Windows :
+Test from Windows (replace the address with your ESP32's IP):
 
 ```powershell
-w32tm /stripchart /computer:192.168.0.32 /samples:5 /dataonly
+w32tm /stripchart /computer:192.168.1.50 /samples:5 /dataonly
 ```
 
-L'état NTP (synchro, source, nombre de requêtes) figure dans `/json` et en bas de la page 1 du TFT.
+The NTP status (sync, source, request count) is shown in `/json` and at the bottom of TFT page 1.
 
-## Configuration réseau
+## Network configuration
 
-La page `/config` permet de changer le SSID, le mot de passe, le DHCP ou l'IP fixe, le masque, la passerelle et les DNS. Les réglages sont enregistrés en NVS et l'ESP32 redémarre. `include/secrets.h` ne fournit que les valeurs par défaut.
+The `/config` page lets you change the SSID, password, DHCP or static IP, netmask, gateway and DNS. Settings are stored in NVS and the ESP32 reboots. `include/secrets.h` only provides the defaults.
 
-Si le WiFi est injoignable au démarrage, l'ESP32 ouvre le point d'accès **ESP32-GPS-Setup** (mot de passe `gpsconfig`). La config est alors sur http://192.168.4.1/config. Le point d'accès se ferme dès que le WiFi revient.
+If the WiFi can't be reached at boot, the ESP32 opens the **ESP32-GPS-Setup** access point (password `gpsconfig`, change `SETUP_AP_PASS` in `src/main.cpp`). The configuration page is then at http://192.168.4.1/config. The access point closes as soon as the WiFi is back.
 
-## Matériel et câblage
+## Hardware and wiring
 
-| Fonction | GPIO ESP32 |
+| Function | ESP32 GPIO |
 |---|---|
-| GPS TX → RX ESP (UART1) | 1 |
-| GPS RX ← TX ESP (facultatif) | 2 |
+| GPS TX → ESP RX (UART1) | 1 |
+| GPS RX ← ESP TX (optional) | 2 |
 | TFT SCLK / MOSI | 7 / 6 |
 | TFT CS / DC / RST / BL | 14 / 15 / 21 / 22 |
-| OLED SDA / SCL (I²C, adresse 0x3C) | 23 / 20 |
+| OLED SDA / SCL (I²C, address 0x3C) | 23 / 20 |
 
-Le GPS est alimenté en 3,3 V, avec la masse en commun avec l'ESP32.
+The GPS is powered from 3.3 V, with a common ground with the ESP32.
 
-## Configuration du GPS
+## GPS configuration
 
-Le firmware attend sur l'UART1 du module :
+The firmware expects on the module's UART1:
 
-| Réglage | Valeur |
+| Setting | Value |
 |---|---|
-| Débit | 38400 bauds, 8N1 |
-| Trames NMEA | RMC + GGA + GSA + GSV + ZDA (VTG, GLL coupés) |
+| Baud rate | 38400 baud, 8N1 |
+| NMEA sentences | RMC + GGA + GSA + GSV + ZDA (VTG, GLL off) |
 | Constellations | GPS + Galileo + GLONASS |
-| SBAS | EGNOS uniquement |
-| Modèle dynamique | Portable |
-| PPS | 1 Hz, 100 ms, aligné UTC, seulement avec fix |
+| SBAS | EGNOS only |
+| Dynamic model | Portable |
+| PPS | 1 Hz, 100 ms, UTC aligned, only with a fix |
 
-Pour appliquer cette config, brancher le module en USB sur le PC, puis lancer :
+To apply this configuration, connect the module to the PC over USB, then run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\gps_config.ps1 -Port COM20
 ```
 
-Pour passer par un adaptateur USB-série branché sur l'UART1 du module, ajouter `-ViaUart1`, avec `-Baud 9600` pour un module neuf ou `-Baud 38400` pour un module déjà configuré.
+To go through a USB-serial adapter wired to the module's UART1, add `-ViaUart1`, with `-Baud 9600` for a new module or `-Baud 38400` for a module that's already configured.
 
-Le script sauvegarde la config en flash, puis la relit sur le module.
+The script saves the configuration to flash, then reads it back from the module.
 
-## Compilation
+## Building
 
-Projet [PlatformIO](https://platformio.org/). Le support Arduino de l'ESP32-C6 passe par la plateforme pioarduino.
+[PlatformIO](https://platformio.org/) project. Arduino support for the ESP32-C6 comes from the pioarduino platform.
 
-1. Copier `include/secrets.example.h` en `include/secrets.h` et y mettre le SSID et le mot de passe WiFi.
-2. Vérifier l'IP fixe (`LOCAL_IP`, `GATEWAY`) dans `src/main.cpp`.
-3. Compiler et flasher :
+1. Copy `include/secrets.example.h` to `include/secrets.h` and fill in the WiFi SSID and password, the AVWX token and the METAR station.
+2. Check the default static IP, gateway and DNS in the `NetConfig` struct in `src/main.cpp` (they can be changed later from `/config`).
+3. Build and flash:
 
 ```bash
 pio run -t upload
 pio device monitor
 ```
 
-## Heure
+On Windows, `platformio.ini` sets `core_dir = C:/pio`: the ESP32 packages contain paths longer than the 260-character limit when installed under the user profile.
 
-- L'heure n'est affichée qu'avec un fix GPS valide. Avant ça, le u-blox peut envoyer l'heure de son horloge interne, souvent fausse sans pile de sauvegarde.
-- L'heure de France est calculée à partir de l'UTC : UTC+2 du dernier dimanche de mars au dernier dimanche d'octobre, à 01:00 UTC, et UTC+1 le reste de l'année.
+## Time
+
+- Time is only shown with a valid GPS fix. Before that, the u-blox may output the time from its internal clock, often wrong without a backup battery.
+- French local time is computed from UTC: UTC+2 from the last Sunday of March to the last Sunday of October, at 01:00 UTC, and UTC+1 the rest of the year.
