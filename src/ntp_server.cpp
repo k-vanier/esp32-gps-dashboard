@@ -85,21 +85,30 @@ void ntpServerLoop() {
 
   bool synced = gpsClockSynced();
   bool pps = gpsClockUsesPps();
+  uint32_t syncAgeMs = gpsClockSyncAgeMs();
+  bool everSynced = syncAgeMs != UINT32_MAX;
 
   uint8_t res[NTP_PACKET_SIZE] = {0};
-  // LI = 3 (non synchronisé) tant que le GPS n'a pas donné l'heure
-  res[0] = ((synced ? 0 : 3) << 6) | (version << 3) | 4;
+  // LI = 3 (non synchronisé) tant que le GPS n'a pas donné l'heure.
+  // Mode 4 (serveur) pour un client, mode 2 (symétrique passif) pour un symétrique actif (RFC 4330 §5).
+  res[0] = ((synced ? 0 : 3) << 6) | (version << 3) | (mode == 3 ? 4 : 2);
   res[1] = synced ? 1 : 16;                  // stratum
   res[2] = req[2];                           // poll : on reprend celui du client
   res[3] = (uint8_t)(pps ? -18 : -10);       // précision : ~4 µs avec PPS, ~1 ms sinon
   put32(res + 4, 0);                         // root delay
-  // root dispersion (format 16.16) : ~1 ms avec PPS, ~50 ms sans
-  put32(res + 8, pps ? 0x00000042 : 0x00000CCD);
+  // Root dispersion (format 16.16) : ~1 ms avec PPS, ~50 ms sans, plus la dérive
+  // depuis la dernière seconde GPS (PHI = 15 ppm, RFC 5905 §7.3)
+  uint32_t disp = pps ? 0x00000042 : 0x00000CCD;
+  if (everSynced) disp += (uint32_t)((uint64_t)syncAgeMs * 15 * 65536 / 1000000000ULL);
+  put32(res + 8, disp);
   memcpy(res + 12, pps ? "PPS" : "GPS", 4);  // reference ID
-  putTime(res + 16, gpsClockLastSync());     // reference timestamp
   memcpy(res + 24, req + 40, 8);             // origin = transmit du client
-  putTime(res + 32, gpsClockAt(rxUs));       // receive
-  putTime(res + 40, gpsClockNow());          // transmit
+  // Jamais synchronisé : horodatages à zéro (RFC 5905 §7.3), l'horloge interne n'a pas d'heure
+  if (everSynced) {
+    putTime(res + 16, gpsClockLastSync());   // reference timestamp
+    putTime(res + 32, gpsClockAt(rxUs));     // receive
+    putTime(res + 40, gpsClockNow());        // transmit
+  }
 
   udp.beginPacket(udp.remoteIP(), udp.remotePort());
   udp.write(res, NTP_PACKET_SIZE);
