@@ -119,6 +119,8 @@ char nmeaLine[100];
 size_t nmeaLen = 0;
 char lastRmc[100] = "";
 char lastGga[100] = "";
+char lastGsa[100] = "";
+char lastGsv[100] = "";
 
 WebServer server(80);
 
@@ -293,6 +295,8 @@ void captureNmea(char c) {
       if (star) *star = '\0';
       if (strncmp(nmeaLine + 3, "RMC", 3) == 0) strlcpy(lastRmc, nmeaLine, sizeof(lastRmc));
       else if (strncmp(nmeaLine + 3, "GGA", 3) == 0) strlcpy(lastGga, nmeaLine, sizeof(lastGga));
+      else if (strncmp(nmeaLine + 3, "GSA", 3) == 0) strlcpy(lastGsa, nmeaLine, sizeof(lastGsa));
+      else if (strncmp(nmeaLine + 3, "GSV", 3) == 0) strlcpy(lastGsv, nmeaLine, sizeof(lastGsv));
     }
     nmeaLen = 0;
     return;
@@ -618,15 +622,22 @@ void drawPageGpsPacket(ShiftCanvas& g, uint32_t now) {
   uint16_t c = gpsError ? D_RED : (locValid ? D_GREEN : D_AMBER);
   drawHeader(g, "Paquet GPS", gpsError ? "AUCUNE DONNEE" : (locValid ? "FIX" : "RECHERCHE"), c);
 
-  g.fillRoundRect(8, 40, 224, 40, 6, D_DIV);
+  // 4 dernières trames (35 caractères max par ligne : la boîte fait 224 px en police 6x8)
+  g.fillRoundRect(8, 38, 224, 60, 6, D_DIV);
   g.setFont(nullptr);
   g.setTextColor(D_TEXT);
-  g.setCursor(14, 48);
-  // Les trames brutes contiennent la position : remplacées par un exemple en capture anonymisée
+  // RMC et GGA contiennent la position : remplacées par un exemple en capture anonymisée
   bool anonRaw = screenAnon && locValid;
-  g.print(String(anonRaw ? "$GNRMC,123519.00,A,4851.502,N,00217" : (lastRmc[0] ? lastRmc : "$--RMC (rien)")).substring(0, 35));
-  g.setCursor(14, 63);
-  g.print(String(anonRaw ? "$GNGGA,123519.00,4851.502,N,00217.6" : (lastGga[0] ? lastGga : "$--GGA (rien)")).substring(0, 35));
+  const char* lines[4] = {
+    anonRaw ? "$GNRMC,123519.00,A,4851.502,N,00217" : (lastRmc[0] ? lastRmc : "$--RMC (rien)"),
+    anonRaw ? "$GNGGA,123519.00,4851.502,N,00217.6" : (lastGga[0] ? lastGga : "$--GGA (rien)"),
+    lastGsa[0] ? lastGsa : "$--GSA (rien)",
+    lastGsv[0] ? lastGsv : "$--GSV (rien)",
+  };
+  for (int i = 0; i < 4; i++) {
+    g.setCursor(14, 45 + i * 13);
+    g.print(String(lines[i]).substring(0, 35));
+  }
 
   String qual = "--";
   if (!gpsError && gpsQuality.isValid()) {
@@ -635,21 +646,21 @@ void drawPageGpsPacket(ShiftCanvas& g, uint32_t now) {
   }
   String hdop = !gpsError && gps.hdop.isValid() && locValid ? String(gps.hdop.hdop(), 1) : String("--");
   String age = !gpsError && gps.location.isValid() ? String(gps.location.age() / 1000.0, 1) + "s" : String("--");
-  drawLabel(g, 12, 92, "QUALITE");
-  drawLabel(g, 116, 92, "HDOP");
-  drawLabel(g, 176, 92, "AGE");
-  drawSmooth(g, &FreeSansBold12pt7b, 12, 106, D_TEXT, qual);
-  drawSmooth(g, &FreeSansBold12pt7b, 116, 106, D_TEXT, hdop);
-  drawSmooth(g, &FreeSansBold12pt7b, 176, 106, D_TEXT, age);
-  drawDivider(g, 136);
+  drawLabel(g, 12, 108, "QUALITE");
+  drawLabel(g, 116, 108, "HDOP");
+  drawLabel(g, 176, 108, "AGE");
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 120, D_TEXT, qual);
+  drawSmooth(g, &FreeSansBold12pt7b, 116, 120, D_TEXT, hdop);
+  drawSmooth(g, &FreeSansBold12pt7b, 176, 120, D_TEXT, age);
+  drawDivider(g, 150);
 
-  drawLabel(g, 12, 146, "TRAMES OK");
-  drawLabel(g, 116, 146, "ERREURS");
-  drawLabel(g, 176, 146, "OCTETS");
-  drawSmooth(g, &FreeSansBold12pt7b, 12, 160, D_GREEN, String(gps.passedChecksum()));
-  drawSmooth(g, &FreeSansBold12pt7b, 116, 160, gps.failedChecksum() ? D_RED : D_TEXT, String(gps.failedChecksum()));
+  drawLabel(g, 12, 160, "TRAMES OK");
+  drawLabel(g, 116, 160, "ERREURS");
+  drawLabel(g, 176, 160, "OCTETS");
+  drawSmooth(g, &FreeSansBold12pt7b, 12, 172, D_GREEN, String(gps.passedChecksum()));
+  drawSmooth(g, &FreeSansBold12pt7b, 116, 172, gps.failedChecksum() ? D_RED : D_TEXT, String(gps.failedChecksum()));
   uint32_t chars = gps.charsProcessed();
-  drawSmooth(g, &FreeSansBold12pt7b, 176, 160, D_TEXT,
+  drawSmooth(g, &FreeSansBold12pt7b, 176, 172, D_TEXT,
              chars >= 1000000 ? String(chars / 1000000.0, 1) + "M" : (chars >= 1000 ? String(chars / 1000) + "k" : String(chars)));
 
   drawLabel(g, 12, 216, String(GPS_USE_UART1 ? "UART1" : "UART2") + "  " + String(GPS_BAUD) + " bauds");
